@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.34114.132
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{F184B08F-C81C-45F6-A57F-5ABD9991F28F}") = "RDET", "RDET.vbproj", "{3C2CA0A2-0B23-41BC-A00E-606AC032C963}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3C2CA0A2-0B23-41BC-A00E-606AC032C963}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3C2CA0A2-0B23-41BC-A00E-606AC032C963}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3C2CA0A2-0B23-41BC-A00E-606AC032C963}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3C2CA0A2-0B23-41BC-A00E-606AC032C963}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {F8ABF05D-889F-4C34-A206-6BAC530A97B9}
+	EndGlobalSection
+EndGlobal

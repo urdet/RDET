@@ -1,0 +1,18 @@
+{
+    "sqltools.connections": [
+        {
+            "mysqlOptions": {
+                "authProtocol": "default",
+                "enableSsl": "Disabled"
+            },
+            "previewLimit": 50,
+            "server": "PC3",
+            "port": 3106,
+            "driver": "MySQL",
+            "name": "Server",
+            "username": "rdet",
+            "database": "damanecash",
+            "askForPassword": true
+        }
+    ]
+}
