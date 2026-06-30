@@ -1,0 +1,471 @@
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
+from fastapi import HTTPException
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session
+
+from app.models import (
+    Account,
+    AccountTransfer,
+    AgencyTransferRule,
+    AuditArea,
+    AuditLog,
+    CashCount,
+    Direction,
+    InterAgencyTransfer,
+    InterAgencyTransferStatus,
+    SalafEntry,
+    Service,
+    ServiceFeeRule,
+    ServiceTransaction,
+    UnpaidItem,
+    User,
+)
+
+
+def audit(db: Session, user: User | None, area: AuditArea, action: str, title: str, details: str = "", **metadata: object) -> None:
+    db.add(
+        AuditLog(
+            user_id=user.id if user else None,
+            user_name=f"{user.first_name} {user.last_name}" if user else None,
+            area=area,
+            action=action,
+            title=title,
+            details=details,
+            extra=metadata,
+        )
+    )
+
+
+def get_account(db: Session, account_id: int | None) -> Account | None:
+    if account_id is None:
+        return None
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
+    return account
+
+
+def account_action_rules(db: Session, company_id: int | None) -> list[dict]:
+    if not company_id:
+        return []
+    value = db.execute(
+        text("SELECT value FROM agency_settings WHERE company_id = :company_id AND key = 'account_action_rules'"),
+        {"company_id": company_id},
+    ).scalar()
+    if not isinstance(value, dict):
+        return []
+    rules = value.get("rules")
+    return rules if isinstance(rules, list) else []
+
+
+def apply_balance_delta(db: Session, account: Account, amount: Decimal) -> None:
+    account.previous_balance = account.balance
+    account.balance += amount
+    account.updated_at = datetime.now(timezone.utc)
+
+
+def apply_account_actions(db: Session, user: User, trigger_account_id: int | None, event: str, amount: Decimal) -> None:
+    if trigger_account_id is None:
+        return
+
+    for rule in account_action_rules(db, user.company_id):
+        if not rule.get("enabled", True):
+            continue
+        if str(rule.get("accountId") or "") != str(trigger_account_id):
+            continue
+        if rule.get("event") != event:
+            continue
+
+        effect = rule.get("effect") if rule.get("effect") in {"add", "subtract"} else ("add" if event == "money_in" else "subtract")
+        delta = amount if effect == "add" else -amount
+        linked_account_ids = rule.get("linkedAccountIds") if isinstance(rule.get("linkedAccountIds"), list) else []
+
+        for linked_account_id in linked_account_ids:
+            try:
+                account_id = int(linked_account_id)
+            except (TypeError, ValueError):
+                continue
+            account = get_account(db, account_id)
+            if not account:
+                continue
+            if user.company_id and user.company_id not in account.company_ids:
+                raise HTTPException(status_code=403, detail="Linked account does not belong to active agency")
+            apply_balance_delta(db, account, delta)
+            audit(
+                db,
+                user,
+                AuditArea.account,
+                "action",
+                "Account action",
+                rule=rule.get("name") or "",
+                event=event,
+                trigger_account_id=trigger_account_id,
+                linked_account_id=account.id,
+                amount=str(amount),
+                effect=effect,
+            )
+
+
+def create_transfer(db: Session, payload, user: User, commit: bool = True) -> AccountTransfer:
+    if not payload.from_account_id and not payload.to_account_id:
+        raise HTTPException(status_code=400, detail="At least one side of the transfer is required")
+    source = get_account(db, payload.from_account_id)
+    target = get_account(db, payload.to_account_id)
+    amount = Decimal(payload.amount)
+    if source:
+        apply_balance_delta(db, source, -amount)
+    if target:
+        apply_balance_delta(db, target, amount)
+    apply_account_actions(db, user, payload.from_account_id, "money_out", amount)
+    apply_account_actions(db, user, payload.to_account_id, "money_in", amount)
+    transfer = AccountTransfer(
+        from_account_id=payload.from_account_id,
+        to_account_id=payload.to_account_id,
+        amount=amount,
+        description=payload.description,
+        contributions=getattr(payload, "contributions", None),
+        occurred_at=payload.occurred_at or datetime.now(timezone.utc),
+        created_by=user.id,
+    )
+    db.add(transfer)
+    audit(db, user, AuditArea.transaction, "create", "Account transfer", amount=str(amount), from_account_id=payload.from_account_id, to_account_id=payload.to_account_id)
+    if commit:
+        db.commit()
+        db.refresh(transfer)
+    return transfer
+
+
+def accept_inter_agency_transfer(db: Session, transfer: InterAgencyTransfer, user: User) -> InterAgencyTransfer:
+    if transfer.status != InterAgencyTransferStatus.pending_receiver:
+        raise HTTPException(status_code=409, detail="Transfer is not pending")
+    if user.company_id != transfer.destination_agency_id:
+        raise HTTPException(status_code=403, detail="Only the receiver agency can accept this transfer")
+
+    locked_transfer = db.scalar(
+        select(InterAgencyTransfer)
+        .where(InterAgencyTransfer.id == transfer.id)
+        .with_for_update()
+    )
+    if not locked_transfer or locked_transfer.status != InterAgencyTransferStatus.pending_receiver:
+        raise HTTPException(status_code=409, detail="Transfer is no longer pending")
+
+    source = db.scalar(select(Account).where(Account.id == locked_transfer.source_account_id).with_for_update())
+    target = db.scalar(select(Account).where(Account.id == locked_transfer.destination_account_id).with_for_update())
+    if not source or locked_transfer.source_agency_id not in source.company_ids:
+        raise HTTPException(status_code=404, detail="Source account not found")
+    if not target or locked_transfer.destination_agency_id not in target.company_ids:
+        raise HTTPException(status_code=404, detail="Destination account not found")
+
+    amount = Decimal(locked_transfer.amount)
+    if Decimal(source.balance) < amount:
+        raise HTTPException(status_code=409, detail="Source account has insufficient balance")
+
+    apply_balance_delta(db, source, -amount)
+    apply_balance_delta(db, target, amount)
+    account_transfer = AccountTransfer(
+        from_account_id=source.id,
+        to_account_id=target.id,
+        amount=amount,
+        description=locked_transfer.note or "Inter-agency transfer",
+        occurred_at=datetime.now(timezone.utc),
+        created_by=locked_transfer.created_by_user_id,
+    )
+    db.add(account_transfer)
+    db.flush()
+
+    locked_transfer.status = InterAgencyTransferStatus.accepted
+    locked_transfer.receiver_decision_by_user_id = user.id
+    locked_transfer.decided_at = datetime.now(timezone.utc)
+    locked_transfer.account_transfer_id = account_transfer.id
+    audit(
+        db,
+        user,
+        AuditArea.transaction,
+        "transfer_accepted",
+        "Inter-agency transfer accepted",
+        transfer_id=locked_transfer.id,
+        amount=str(amount),
+        source_agency_id=locked_transfer.source_agency_id,
+        destination_agency_id=locked_transfer.destination_agency_id,
+    )
+    db.commit()
+    db.refresh(locked_transfer)
+    return locked_transfer
+
+
+def fee_for(db: Session, service_id: int, direction: Direction, amount: Decimal) -> Decimal:
+    rule = db.scalar(
+        select(ServiceFeeRule).where(
+            ServiceFeeRule.service_id == service_id,
+            ServiceFeeRule.service_type == direction,
+            ServiceFeeRule.min_amount <= amount,
+            ServiceFeeRule.max_amount >= amount,
+        )
+    )
+    return Decimal(rule.fee) if rule else Decimal("0")
+
+
+def account_by_names(db: Session, company_id: int | None, names: list[str]) -> Account:
+    normalized_names = [name.lower() for name in names]
+    query = select(Account).where(func.lower(Account.name).in_(normalized_names))
+    if company_id:
+        query = query.where(Account.company_ids.any(company_id))
+    account = db.scalar(query.order_by(Account.legacy_id.nullslast(), Account.name))
+    if not account:
+        raise HTTPException(status_code=400, detail=f"Required account not found: {names[0]}")
+    return account
+
+
+def service_accounts(service: Service, direction: Direction) -> tuple[int, int]:
+    if not service.primary_account_id or not service.secondary_account_id:
+        raise HTTPException(status_code=400, detail="Service account routing is not configured")
+    if service.switch_type and service.switch_type == direction.value:
+        return service.primary_account_id, service.secondary_account_id
+    if service.switch_type:
+        return service.secondary_account_id, service.primary_account_id
+    return service.primary_account_id, service.secondary_account_id
+
+
+def service_cash_accounts(db: Session, user: User, direction: Direction) -> tuple[int, int]:
+    cash = account_by_names(db, user.company_id, ["Caisse Calculee", "Caisse Calculée", "Caise Calcule", "Caise Calculee"])
+    fundex = account_by_names(db, user.company_id, ["Fundex"])
+    if direction == Direction.in_:
+        return cash.id, fundex.id
+    return fundex.id, cash.id
+
+
+def service_configured_accounts(db: Session, user: User, service: Service, direction: Direction) -> tuple[int, int] | None:
+    routing_config = service.routing_config if isinstance(service.routing_config, dict) else {}
+    route = routing_config.get(direction.value)
+    if not isinstance(route, dict):
+        return None
+    try:
+        from_id = int(route.get("from_account_id") or 0)
+        to_id = int(route.get("to_account_id") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not from_id or not to_id:
+        return None
+    for account_id in [from_id, to_id]:
+        account = get_account(db, account_id)
+        if not account or (user.company_id and user.company_id not in account.company_ids):
+            raise HTTPException(status_code=403, detail="Configured service route account does not belong to active agency")
+    return from_id, to_id
+
+
+def service_route_accounts(db: Session, user: User, service: Service, direction: Direction) -> tuple[int, int]:
+    configured_accounts = service_configured_accounts(db, user, service, direction)
+    if configured_accounts:
+        return configured_accounts
+    if service.primary_account_id and service.secondary_account_id:
+        return service_accounts(service, direction)
+    return service_cash_accounts(db, user, direction)
+
+
+def service_supports_direction(service: Service, direction: Direction) -> bool:
+    service_type = (service.transaction_type or service.switch_type or "IN & OUT").upper()
+    if service_type in {"IN & OUT", "[IN][OUT]", ""}:
+        return True
+    return direction.value in service_type
+
+
+def matching_service_transaction(db: Session, payload, user: User, amount: Decimal) -> ServiceTransaction | None:
+    occurred_at = payload.occurred_at
+    description = (payload.description or "").strip()
+    query = select(ServiceTransaction).where(
+        ServiceTransaction.service_id == payload.service_id,
+        ServiceTransaction.direction == payload.direction,
+        ServiceTransaction.amount == amount,
+        ServiceTransaction.reversed_at.is_(None),
+    )
+    if user.company_id:
+        query = query.join(User, User.id == ServiceTransaction.created_by).where(User.company_id == user.company_id)
+    if occurred_at:
+        query = query.where(func.date(ServiceTransaction.occurred_at) == occurred_at.date())
+        if description:
+            query = query.where(func.lower(func.coalesce(ServiceTransaction.description, "")) == description.lower())
+    elif description:
+        query = query.where(func.lower(func.coalesce(ServiceTransaction.description, "")) == description.lower())
+    else:
+        return None
+    return db.scalar(query.order_by(ServiceTransaction.id.desc()).limit(1))
+
+
+def record_service_transfer_delta(db: Session, user: User, service: Service, direction: Direction, amount_delta: Decimal, occurred_at: datetime | None, description: str) -> None:
+    if amount_delta == 0:
+        return
+    from_id, to_id = service_route_accounts(db, user, service, direction)
+    amount = abs(amount_delta)
+    if amount_delta < 0:
+        from_id, to_id = to_id, from_id
+    create_transfer(
+        db,
+        type("TransferPayload", (), {
+            "from_account_id": from_id,
+            "to_account_id": to_id,
+            "amount": amount,
+            "description": description,
+            "occurred_at": occurred_at,
+        })(),
+        user,
+        commit=False,
+    )
+
+
+def payload_fee(db: Session, service: Service, direction: Direction, amount: Decimal, payload) -> Decimal:
+    manual_fee = getattr(payload, "fee", None)
+    return Decimal(manual_fee or 0) if manual_fee is not None else fee_for(db, service.id, direction, amount)
+
+
+def transaction_effect_amount(amount: Decimal, fee: Decimal) -> Decimal:
+    return amount + fee
+
+
+def update_service_transaction(db: Session, tx: ServiceTransaction, amount: Decimal, fee: Decimal | None, user: User) -> ServiceTransaction:
+    service = db.get(Service, tx.service_id)
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    new_amount = Decimal(amount)
+    new_fee = Decimal(fee or 0) if fee is not None else fee_for(db, service.id, tx.direction, new_amount)
+    old_amount = Decimal(tx.amount)
+    old_fee = Decimal(tx.fee or 0)
+    record_service_transfer_delta(
+        db,
+        user,
+        service,
+        tx.direction,
+        transaction_effect_amount(new_amount, new_fee) - transaction_effect_amount(old_amount, old_fee),
+        tx.occurred_at,
+        f"Correction {service.name} {tx.direction.value}",
+    )
+    tx.amount = new_amount
+    tx.fee = new_fee
+    audit(db, user, AuditArea.service, "update", "Service transaction correction", service=service.name, transaction_id=tx.id, old_amount=str(old_amount), old_fee=str(old_fee), amount=str(new_amount), fee=str(new_fee))
+    db.commit()
+    db.refresh(tx)
+    return tx
+
+
+def reverse_service_transaction(db: Session, tx: ServiceTransaction, user: User) -> ServiceTransaction:
+    service = db.get(Service, tx.service_id)
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    record_service_transfer_delta(
+        db,
+        user,
+        service,
+        tx.direction,
+        -transaction_effect_amount(Decimal(tx.amount), Decimal(tx.fee or 0)),
+        tx.occurred_at,
+        f"Annulation {service.name} {tx.direction.value}",
+    )
+    tx.reversed_at = datetime.now(timezone.utc)
+    audit(db, user, AuditArea.service, "delete", "Service transaction reversed", service=service.name, transaction_id=tx.id, amount=str(tx.amount))
+    db.commit()
+    db.refresh(tx)
+    return tx
+
+
+def create_service_transaction(db: Session, payload, user: User) -> ServiceTransaction:
+    service = db.get(Service, payload.service_id)
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+    if not service.active:
+        raise HTTPException(status_code=400, detail="Service is inactive")
+    if not service_supports_direction(service, payload.direction):
+        raise HTTPException(status_code=400, detail=f"{service.name} does not support {payload.direction.value}")
+    amount = Decimal(payload.amount)
+    duplicate = matching_service_transaction(db, payload, user, amount)
+    if duplicate:
+        basis = "same date and description" if payload.occurred_at and payload.description else "same description" if payload.description else "same date"
+        raise HTTPException(status_code=409, detail=f"Duplicate transaction detected ({basis}). Existing ID: {duplicate.id}")
+    fee = payload_fee(db, service, payload.direction, amount, payload)
+    record_service_transfer_delta(db, user, service, payload.direction, transaction_effect_amount(amount, fee), payload.occurred_at, f"{service.name} {payload.direction.value}")
+    tx = ServiceTransaction(
+        service_id=service.id,
+        direction=payload.direction,
+        amount=amount,
+        fee=fee,
+        description=payload.description,
+        occurred_at=payload.occurred_at or datetime.now(timezone.utc),
+        created_by=user.id,
+    )
+    db.add(tx)
+    audit(db, user, AuditArea.service, "create", "Service transaction", service=service.name, amount=str(amount), fee=str(fee))
+    db.commit()
+    db.refresh(tx)
+    return tx
+
+
+def save_cash_count(db: Session, payload, user: User) -> dict[str, Decimal]:
+    db.query(CashCount).filter(CashCount.counted_on == payload.counted_on).delete()
+    total = Decimal("0")
+    for denomination, quantity in payload.counts.items():
+        total += Decimal(denomination) * quantity
+        db.add(CashCount(counted_on=payload.counted_on, denomination=denomination, quantity=quantity, created_by=user.id))
+    settings = db.execute(
+        text("SELECT value FROM agency_settings WHERE company_id = :company_id AND key = 'app_settings'"),
+        {"company_id": user.company_id},
+    ).scalar() if user.company_id else {}
+    cash_account_id = settings.get("cashAccountId") if isinstance(settings, dict) else None
+    if cash_account_id:
+        try:
+            account = db.get(Account, int(cash_account_id))
+        except (TypeError, ValueError):
+            account = None
+        if account and (not user.company_id or user.company_id in account.company_ids):
+            account.previous_balance = account.balance
+            account.balance = total
+            account.updated_at = datetime.now(timezone.utc)
+    audit(db, user, AuditArea.cash, "save", "Cash count", counted_on=str(payload.counted_on), total=str(total))
+    db.commit()
+    return {"total": total}
+
+
+def dashboard_summary(db: Session, company_id: int | None = None, hidden_account_ids: set[int] | None = None) -> dict:
+    today = date.today()
+    accounts_query = select(Account)
+    if company_id:
+        accounts_query = accounts_query.where(Account.company_ids.any(company_id))
+    accounts = db.scalars(accounts_query.order_by(Account.legacy_id.nullslast(), Account.name)).all()
+    if hidden_account_ids:
+        accounts = [account for account in accounts if account.id not in hidden_account_ids]
+    total_balance = sum((Decimal(a.balance) for a in accounts), Decimal("0"))
+    service_in_query = select(func.coalesce(func.sum(ServiceTransaction.amount), 0)).where(ServiceTransaction.direction == Direction.in_, func.date(ServiceTransaction.occurred_at) == today)
+    service_out_query = select(func.coalesce(func.sum(ServiceTransaction.amount), 0)).where(ServiceTransaction.direction == Direction.out, func.date(ServiceTransaction.occurred_at) == today)
+    fees_query = select(func.coalesce(func.sum(ServiceTransaction.fee), 0)).where(func.date(ServiceTransaction.occurred_at) == today)
+    if company_id:
+        service_in_query = service_in_query.join(User, User.id == ServiceTransaction.created_by).where(User.company_id == company_id)
+        service_out_query = service_out_query.join(User, User.id == ServiceTransaction.created_by).where(User.company_id == company_id)
+        fees_query = fees_query.join(User, User.id == ServiceTransaction.created_by).where(User.company_id == company_id)
+    service_in = db.scalar(service_in_query)
+    service_out = db.scalar(service_out_query)
+    fees = db.scalar(fees_query)
+    unpaid_total = db.scalar(select(func.coalesce(func.sum(UnpaidItem.amount), 0)).where(UnpaidItem.settled.is_(False)))
+    cash_real = db.scalar(
+        select(func.coalesce(func.sum(CashCount.denomination * CashCount.quantity), 0)).where(CashCount.counted_on == today)
+    )
+    return {
+        "total_balance": total_balance,
+        "service_in": service_in,
+        "service_out": service_out,
+        "fees": fees,
+        "unpaid_total": unpaid_total,
+        "cash_real": cash_real,
+        "credit": service_in,
+        "debit": service_out,
+        "total_sales": service_in,
+        "total_purchases": service_out,
+        "accounts": accounts,
+    }
+
+
+def create_salaf(db: Session, payload, user: User) -> SalafEntry:
+    entry = SalafEntry(investor=payload.investor, direction=payload.direction, amount=payload.amount, created_by=user.id)
+    db.add(entry)
+    audit(db, user, AuditArea.transaction, "create", "Salaf entry", investor=payload.investor, direction=payload.direction, amount=str(payload.amount))
+    db.commit()
+    db.refresh(entry)
+    return entry
