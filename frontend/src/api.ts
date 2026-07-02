@@ -1,4 +1,4 @@
-import { Account, AccountContributionEntry, Agency, AgencyLink, AgencyTransferRule, CurrentUser, InterAgencyTransfer, InterAgencyTransferStatus, ManagedUser, UserPermissionMap, UserRole } from './types';
+import { Account, AccountContributionEntry, Agency, AgencyLink, AgencyTransferRule, CurrentUser, InterAgencySettlement, InterAgencyTransfer, InterAgencyTransferStatus, ManagedUser, UserPermissionMap, UserRole } from './types';
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
@@ -54,17 +54,17 @@ export async function switchAgency(agencyId: number) {
   return api<CurrentUser>(`/me/agency/${agencyId}`, { method: 'POST' });
 }
 
-export async function createAccount(payload: { name: string; balance: string; visible: boolean }) {
+export async function createAccount(payload: { name: string; balance: string; visible: boolean; normal_balance_side?: 'debit' | 'credit' }) {
   return api<Account>('/accounts', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
-export async function updateAccountBalance(accountId: number, balance: string) {
+export async function updateAccountBalance(accountId: number, balance: string, normalBalanceSide?: 'debit' | 'credit') {
   return api<Account>(`/accounts/${accountId}/balance`, {
     method: 'PATCH',
-    body: JSON.stringify({ balance }),
+    body: JSON.stringify({ balance, normal_balance_side: normalBalanceSide }),
   });
 }
 
@@ -135,6 +135,27 @@ export async function acceptInterAgencyTransfer(transferId: number) {
 
 export async function cancelInterAgencyTransfer(transferId: number) {
   return api<InterAgencyTransfer>(`/inter-agency-transfers/${transferId}/cancel`, { method: 'POST' });
+}
+
+export async function listInterAgencySettlements() {
+  return api<InterAgencySettlement[]>('/inter-agency-settlements');
+}
+
+export async function createInterAgencySettlement(payload: {
+  inter_agency_transfer_id: number;
+  payer_account_id: number;
+  receiver_account_id: number;
+  amount: string;
+  note?: string;
+}) {
+  return api<InterAgencySettlement>('/inter-agency-settlements', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function acceptInterAgencySettlement(settlementId: number) {
+  return api<InterAgencySettlement>(`/inter-agency-settlements/${settlementId}/accept`, { method: 'POST' });
 }
 
 export async function getAccountContributions(accountId: number) {

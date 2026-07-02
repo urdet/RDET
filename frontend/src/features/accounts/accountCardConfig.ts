@@ -1,4 +1,5 @@
 import { Account, Dashboard, ScreenId, UserRole } from '../../types';
+import { trLoose } from '../../i18n';
 
 export type AccountActionSlot = 'hidden' | 'versement' | 'transfer' | 'cash' | 'unpaid' | 'transactions' | 'refresh' | ScreenId;
 
@@ -94,51 +95,51 @@ export type AccountsPopupConfig = {
 
 export const defaultAccountsPopupConfig: AccountsPopupConfig = {
   movement: {
-    title: 'Versement / Retrait',
-    versementLabel: 'Versement',
-    retraitLabel: 'Retrait',
+    title: 'إيداع / سحب',
+    versementLabel: 'إيداع',
+    retraitLabel: 'سحب',
     defaultType: 'versement',
     applyFixedType: false,
     fixedType: 'versement',
-    accountLabel: 'Compte',
+    accountLabel: 'الحساب',
     applyFixedAccount: false,
     fixedAccountId: '',
-    amountLabel: 'Montant',
+    amountLabel: 'المبلغ',
     applyFixedAmount: false,
     fixedAmount: '',
-    descriptionLabel: 'Description',
+    descriptionLabel: 'ملاحظة',
     showDescription: true,
     applyFixedDescription: false,
     fixedDescription: '',
     showContributors: false,
-    contributorsLabel: 'Contributeur',
+    contributorsLabel: 'المساهم',
     contributors: [],
-    validateLabel: 'Validate',
-    cancelLabel: 'Cancel',
+    validateLabel: 'تأكيد',
+    cancelLabel: 'إلغاء',
   },
   transfer: {
-    title: 'Transfert entre comptes',
-    fromLabel: 'From compte',
+    title: 'تحويل بين الحسابات',
+    fromLabel: 'من حساب',
     applyFixedFromAccount: false,
     fixedFromAccountId: '',
-    toLabel: 'To compte',
+    toLabel: 'إلى حساب',
     applyFixedToAccount: false,
     fixedToAccountId: '',
-    amountLabel: 'Montant',
+    amountLabel: 'المبلغ',
     applyFixedAmount: false,
     fixedAmount: '',
-    descriptionLabel: 'Description',
+    descriptionLabel: 'ملاحظة',
     showDescription: true,
     applyFixedDescription: false,
     fixedDescription: '',
-    validateLabel: 'Validate',
-    cancelLabel: 'Cancel',
+    validateLabel: 'تأكيد',
+    cancelLabel: 'إلغاء',
   },
 };
 
 export const fixedCompteButtons: AccountButtonWidget[] = [
-  { id: 'fixed-versement', visible: true, label: 'Versement / Retrait', action: 'versement', position: 1 },
-  { id: 'fixed-transfer', visible: true, label: 'Transfert', action: 'transfer', position: 2 },
+  { id: 'fixed-versement', visible: true, label: 'إيداع / سحب', action: 'versement', position: 1 },
+  { id: 'fixed-transfer', visible: true, label: 'تحويل', action: 'transfer', position: 2 },
 ];
 
 export const defaultAccountCardConfig: AccountCardConfig = {
@@ -361,7 +362,7 @@ function metricContext(account: Account, dashboard: Dashboard | null): Record<st
 
 export function renderTextWidget(widget: AccountTextWidget, account: Account, dashboard: Dashboard | null) {
   const result = evaluateTemplate(widget.formula, account, dashboard);
-  return widget.label ? `${widget.label} : ${result}` : result;
+  return widget.label ? `${trLoose(widget.label)} : ${result}` : result;
 }
 
 export function evaluateTemplate(template: string, account: Account, dashboard: Dashboard | null) {

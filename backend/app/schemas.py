@@ -92,6 +92,9 @@ class AccountOut(BaseModel):
     name: str
     balance: Decimal
     previous_balance: Decimal | None = None
+    debit_total: Decimal = 0
+    credit_total: Decimal = 0
+    normal_balance_side: str = "debit"
     visible: bool
     company_ids: list[int]
     legacy_id: int | None
@@ -104,10 +107,12 @@ class AccountCreate(BaseModel):
     name: str
     balance: Decimal = 0
     visible: bool = True
+    normal_balance_side: str = Field(default="debit", pattern=r"^(debit|credit)$")
 
 
 class AccountBalanceUpdate(BaseModel):
     balance: Decimal
+    normal_balance_side: str | None = Field(default=None, pattern=r"^(debit|credit)$")
 
 
 class AccountsScreenSettingsIn(BaseModel):
@@ -200,6 +205,39 @@ class InterAgencyTransferOut(BaseModel):
     receiver_decision_by_user_id: int | None = None
     created_at: datetime
     decided_at: datetime | None = None
+    settled_amount: Decimal = 0
+    remaining_amount: Decimal = 0
+
+
+class InterAgencySettlementCreate(BaseModel):
+    inter_agency_transfer_id: int
+    payer_account_id: int
+    receiver_account_id: int
+    amount: Decimal = Field(gt=0)
+    note: str | None = None
+
+
+class InterAgencySettlementOut(BaseModel):
+    id: int
+    inter_agency_transfer_id: int
+    payer_agency_id: int
+    payer_account_id: int
+    payer_agency_name: str | None = None
+    payer_account_name: str | None = None
+    receiver_agency_id: int
+    receiver_account_id: int
+    receiver_agency_name: str | None = None
+    receiver_account_name: str | None = None
+    debt_account_id: int
+    debt_account_name: str | None = None
+    amount: Decimal
+    note: str | None = None
+    status: str = "pending"
+    account_transfer_id: int | None = None
+    created_by_user_id: int | None = None
+    accepted_by_user_id: int | None = None
+    created_at: datetime
+    accepted_at: datetime | None = None
 
 
 class ServiceOut(BaseModel):
@@ -306,6 +344,8 @@ class SalafEntryIn(BaseModel):
 
 class DashboardSummary(BaseModel):
     total_balance: Decimal
+    total_debit: Decimal = 0
+    total_credit: Decimal = 0
     service_in: Decimal
     service_out: Decimal
     fees: Decimal

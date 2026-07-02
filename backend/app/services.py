@@ -7,11 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Account,
+    AccountLedgerEntry,
     AccountTransfer,
     AgencyTransferRule,
     AuditArea,
     AuditLog,
     CashCount,
+    Company,
     Direction,
     InterAgencyTransfer,
     InterAgencyTransferStatus,
@@ -47,6 +49,40 @@ def get_account(db: Session, account_id: int | None) -> Account | None:
     return account
 
 
+def account_normal_side(account: Account) -> str:
+    return account.normal_balance_side if account.normal_balance_side in {"debit", "credit"} else "debit"
+
+
+def account_display_balance(account: Account) -> Decimal:
+    debit = Decimal(account.debit_total or 0)
+    credit = Decimal(account.credit_total or 0)
+    return debit - credit if account_normal_side(account) == "debit" else credit - debit
+
+
+def sync_account_balance(account: Account) -> None:
+    account.balance = account_display_balance(account)
+
+
+def reset_account_opening_balance(account: Account, balance: Decimal, normal_side: str | None = None) -> None:
+    if normal_side in {"debit", "credit"}:
+        account.normal_balance_side = normal_side
+    side = account_normal_side(account)
+    amount = Decimal(balance)
+    if side == "debit":
+        account.debit_total = amount if amount >= 0 else Decimal("0")
+        account.credit_total = -amount if amount < 0 else Decimal("0")
+    else:
+        account.credit_total = amount if amount >= 0 else Decimal("0")
+        account.debit_total = -amount if amount < 0 else Decimal("0")
+    sync_account_balance(account)
+
+
+def ledger_side_for_delta(account: Account, delta: Decimal) -> str:
+    if delta >= 0:
+        return "debit" if account_normal_side(account) == "debit" else "credit"
+    return "credit" if account_normal_side(account) == "debit" else "debit"
+
+
 def account_action_rules(db: Session, company_id: int | None) -> list[dict]:
     if not company_id:
         return []
@@ -60,13 +96,59 @@ def account_action_rules(db: Session, company_id: int | None) -> list[dict]:
     return rules if isinstance(rules, list) else []
 
 
-def apply_balance_delta(db: Session, account: Account, amount: Decimal) -> None:
+def apply_balance_delta(
+    db: Session,
+    account: Account,
+    amount: Decimal,
+    *,
+    account_transfer_id: int | None = None,
+    description: str | None = None,
+    occurred_at: datetime | None = None,
+    created_by: int | None = None,
+    record_ledger: bool = True,
+) -> None:
+    sync_account_balance(account)
     account.previous_balance = account.balance
-    account.balance += amount
+    delta = Decimal(amount)
+    side = account_normal_side(account)
+    if delta >= 0:
+        if side == "debit":
+            account.debit_total = Decimal(account.debit_total or 0) + delta
+        else:
+            account.credit_total = Decimal(account.credit_total or 0) + delta
+    else:
+        if side == "debit":
+            account.credit_total = Decimal(account.credit_total or 0) + abs(delta)
+        else:
+            account.debit_total = Decimal(account.debit_total or 0) + abs(delta)
+    sync_account_balance(account)
     account.updated_at = datetime.now(timezone.utc)
+    if record_ledger and delta != 0:
+        db.add(
+            AccountLedgerEntry(
+                account_id=account.id,
+                account_transfer_id=account_transfer_id,
+                side=ledger_side_for_delta(account, delta),
+                amount=abs(delta),
+                balance_effect=delta,
+                balance_after=account.balance,
+                description=description,
+                occurred_at=occurred_at or datetime.now(timezone.utc),
+                created_by=created_by,
+            )
+        )
 
 
-def apply_account_actions(db: Session, user: User, trigger_account_id: int | None, event: str, amount: Decimal) -> None:
+def apply_account_actions(
+    db: Session,
+    user: User,
+    trigger_account_id: int | None,
+    event: str,
+    amount: Decimal,
+    *,
+    account_transfer_id: int | None = None,
+    occurred_at: datetime | None = None,
+) -> None:
     if trigger_account_id is None:
         return
 
@@ -92,7 +174,15 @@ def apply_account_actions(db: Session, user: User, trigger_account_id: int | Non
                 continue
             if user.company_id and user.company_id not in account.company_ids:
                 raise HTTPException(status_code=403, detail="Linked account does not belong to active agency")
-            apply_balance_delta(db, account, delta)
+            apply_balance_delta(
+                db,
+                account,
+                delta,
+                account_transfer_id=account_transfer_id,
+                description=f"Account action: {rule.get('name') or event}",
+                occurred_at=occurred_at,
+                created_by=user.id,
+            )
             audit(
                 db,
                 user,
@@ -114,22 +204,24 @@ def create_transfer(db: Session, payload, user: User, commit: bool = True) -> Ac
     source = get_account(db, payload.from_account_id)
     target = get_account(db, payload.to_account_id)
     amount = Decimal(payload.amount)
-    if source:
-        apply_balance_delta(db, source, -amount)
-    if target:
-        apply_balance_delta(db, target, amount)
-    apply_account_actions(db, user, payload.from_account_id, "money_out", amount)
-    apply_account_actions(db, user, payload.to_account_id, "money_in", amount)
+    occurred_at = payload.occurred_at or datetime.now(timezone.utc)
     transfer = AccountTransfer(
         from_account_id=payload.from_account_id,
         to_account_id=payload.to_account_id,
         amount=amount,
         description=payload.description,
         contributions=getattr(payload, "contributions", None),
-        occurred_at=payload.occurred_at or datetime.now(timezone.utc),
+        occurred_at=occurred_at,
         created_by=user.id,
     )
     db.add(transfer)
+    db.flush()
+    if source:
+        apply_balance_delta(db, source, -amount, account_transfer_id=transfer.id, description=payload.description, occurred_at=occurred_at, created_by=user.id)
+    if target:
+        apply_balance_delta(db, target, amount, account_transfer_id=transfer.id, description=payload.description, occurred_at=occurred_at, created_by=user.id)
+    apply_account_actions(db, user, payload.from_account_id, "money_out", amount, account_transfer_id=transfer.id, occurred_at=occurred_at)
+    apply_account_actions(db, user, payload.to_account_id, "money_in", amount, account_transfer_id=transfer.id, occurred_at=occurred_at)
     audit(db, user, AuditArea.transaction, "create", "Account transfer", amount=str(amount), from_account_id=payload.from_account_id, to_account_id=payload.to_account_id)
     if commit:
         db.commit()
@@ -159,21 +251,37 @@ def accept_inter_agency_transfer(db: Session, transfer: InterAgencyTransfer, use
         raise HTTPException(status_code=404, detail="Destination account not found")
 
     amount = Decimal(locked_transfer.amount)
-    if Decimal(source.balance) < amount:
-        raise HTTPException(status_code=409, detail="Source account has insufficient balance")
+    source_agency_name = db.scalar(select(Company.name).where(Company.id == locked_transfer.source_agency_id)) or "Source agency"
+    destination_agency_name = db.scalar(select(Company.name).where(Company.id == locked_transfer.destination_agency_id)) or "Destination agency"
 
-    apply_balance_delta(db, source, -amount)
-    apply_balance_delta(db, target, amount)
     account_transfer = AccountTransfer(
         from_account_id=source.id,
         to_account_id=target.id,
         amount=amount,
         description=locked_transfer.note or "Inter-agency transfer",
+        contributions=[
+            {
+                "account_id": source.id,
+                "agency_id": locked_transfer.destination_agency_id,
+                "name": destination_agency_name,
+                "amount": str(amount),
+                "direction": "versement",
+            },
+            {
+                "account_id": target.id,
+                "agency_id": locked_transfer.source_agency_id,
+                "name": source_agency_name,
+                "amount": str(amount),
+                "direction": "versement",
+            },
+        ],
         occurred_at=datetime.now(timezone.utc),
         created_by=locked_transfer.created_by_user_id,
     )
     db.add(account_transfer)
     db.flush()
+    apply_balance_delta(db, source, amount, account_transfer_id=account_transfer.id, description=account_transfer.description, occurred_at=account_transfer.occurred_at, created_by=account_transfer.created_by)
+    apply_balance_delta(db, target, amount, account_transfer_id=account_transfer.id, description=account_transfer.description, occurred_at=account_transfer.occurred_at, created_by=account_transfer.created_by)
 
     locked_transfer.status = InterAgencyTransferStatus.accepted
     locked_transfer.receiver_decision_by_user_id = user.id
@@ -416,8 +524,7 @@ def save_cash_count(db: Session, payload, user: User) -> dict[str, Decimal]:
         except (TypeError, ValueError):
             account = None
         if account and (not user.company_id or user.company_id in account.company_ids):
-            account.previous_balance = account.balance
-            account.balance = total
+            apply_balance_delta(db, account, total - account_display_balance(account), description="Cash count adjustment", created_by=user.id)
             account.updated_at = datetime.now(timezone.utc)
     audit(db, user, AuditArea.cash, "save", "Cash count", counted_on=str(payload.counted_on), total=str(total))
     db.commit()
@@ -432,7 +539,11 @@ def dashboard_summary(db: Session, company_id: int | None = None, hidden_account
     accounts = db.scalars(accounts_query.order_by(Account.legacy_id.nullslast(), Account.name)).all()
     if hidden_account_ids:
         accounts = [account for account in accounts if account.id not in hidden_account_ids]
+    for account in accounts:
+        sync_account_balance(account)
     total_balance = sum((Decimal(a.balance) for a in accounts), Decimal("0"))
+    total_debit = sum((Decimal(a.debit_total or 0) for a in accounts), Decimal("0"))
+    total_credit = sum((Decimal(a.credit_total or 0) for a in accounts), Decimal("0"))
     service_in_query = select(func.coalesce(func.sum(ServiceTransaction.amount), 0)).where(ServiceTransaction.direction == Direction.in_, func.date(ServiceTransaction.occurred_at) == today)
     service_out_query = select(func.coalesce(func.sum(ServiceTransaction.amount), 0)).where(ServiceTransaction.direction == Direction.out, func.date(ServiceTransaction.occurred_at) == today)
     fees_query = select(func.coalesce(func.sum(ServiceTransaction.fee), 0)).where(func.date(ServiceTransaction.occurred_at) == today)
@@ -449,6 +560,8 @@ def dashboard_summary(db: Session, company_id: int | None = None, hidden_account
     )
     return {
         "total_balance": total_balance,
+        "total_debit": total_debit,
+        "total_credit": total_credit,
         "service_in": service_in,
         "service_out": service_out,
         "fees": fees,

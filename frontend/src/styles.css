@@ -793,6 +793,38 @@ button {
   font-weight: 700;
 }
 
+.compte-ledger-strip {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 78px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.compte-ledger-strip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compte-basis {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 98px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
 .compte-dynamic-texts {
   display: grid;
   gap: 3px;
@@ -1231,6 +1263,32 @@ button {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.settlement-simple-summary {
+  margin-bottom: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settlement-simple-summary span {
+  min-height: 40px;
+  border: 1px solid var(--line, #d6e3df);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted, #55706a);
+  background: var(--surface, #f8fbfa);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.settlement-simple-summary b {
+  color: var(--text, #14231f);
 }
 
 .incoming-transfer-card {
@@ -2764,12 +2822,23 @@ button {
   gap: 7px;
 }
 
+.account-movement-header {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) minmax(72px, auto) minmax(72px, auto) minmax(80px, auto);
+  gap: 10px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 .account-movement-row {
   min-height: 38px;
   border-radius: 8px;
   padding: 8px 10px;
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) auto;
+  grid-template-columns: 92px minmax(0, 1fr) minmax(72px, auto) minmax(72px, auto) minmax(80px, auto);
   align-items: center;
   gap: 10px;
   font-size: 13px;
@@ -2793,6 +2862,12 @@ button {
   white-space: nowrap;
   color: inherit;
   opacity: 0.78;
+}
+
+.account-movement-row b {
+  font: inherit;
+  color: #334155;
+  text-align: right;
 }
 
 .workflow-page {
@@ -3889,12 +3964,24 @@ body {
 .compte-solde {
   position: static;
   height: auto;
-  margin-top: 30px;
+  margin-top: 22px;
   display: block;
   color: var(--text);
   font-size: 28px;
   line-height: 1;
   text-align: left;
+}
+
+.compte-ledger-strip {
+  position: static;
+  margin-top: 12px;
+  color: var(--muted);
+}
+
+.compte-basis {
+  position: static;
+  margin-top: 5px;
+  color: var(--faint);
 }
 
 .compte-actions-row {
@@ -4577,6 +4664,44 @@ html[dir='rtl'] .account-modal {
   box-shadow: 24px 0 70px rgba(15, 23, 42, 0.16);
 }
 
+html[dir='rtl'] input,
+html[dir='rtl'] select,
+html[dir='rtl'] textarea,
+html[dir='rtl'] .form-field,
+html[dir='rtl'] .panel-card,
+html[dir='rtl'] .compact-row,
+html[dir='rtl'] .account-movement-header,
+html[dir='rtl'] .account-movement-row,
+html[dir='rtl'] .transfer-panel,
+html[dir='rtl'] .transfer-source,
+html[dir='rtl'] .transfer-balance,
+html[dir='rtl'] .empty-service-state,
+html[dir='rtl'] .settlement-hint,
+html[dir='rtl'] .formula-help {
+  direction: rtl;
+  text-align: right;
+}
+
+html[dir='rtl'] .modal-actions,
+html[dir='rtl'] .inline-form,
+html[dir='rtl'] .rule-form,
+html[dir='rtl'] .settlement-simple-summary,
+html[dir='rtl'] .incoming-transfer-actions,
+html[dir='rtl'] .account-toolbar-actions,
+html[dir='rtl'] .compact-row {
+  flex-direction: row-reverse;
+}
+
+html[dir='rtl'] .operation-toggle {
+  direction: rtl;
+}
+
+html[dir='rtl'] .circle-action,
+html[dir='rtl'] .table-icon-button,
+html[dir='rtl'] .mini-action {
+  text-align: center;
+}
+
 @media (max-width: 1100px) {
   .auth-screen {
     grid-template-columns: 1fr;
@@ -4691,5 +4816,565 @@ html[dir='rtl'] .account-modal {
   .workflow-inspector {
     border: 0;
     border-bottom: 1px solid #e5e1dc;
+  }
+}
+
+/* Professional compact refresh */
+:root[data-theme='light'] {
+  --bg: #eef6f4;
+  --surface: #f8fbfa;
+  --card: #ffffff;
+  --hover: #e6f7f3;
+  --line: #d6e3df;
+  --line-strong: #8fc7b9;
+  --text: #14231f;
+  --muted: #55706a;
+  --faint: #76908a;
+  --accent: #00a88f;
+  --accent-strong: #007f73;
+  --accent-soft: #d9f7ef;
+  --info: #2563eb;
+  --info-soft: #dbeafe;
+  --warn: #f59e0b;
+  --warn-soft: #fef3c7;
+  --danger: #e11d48;
+  --danger-soft: #ffe4e6;
+  --success: #16a34a;
+  --success-soft: #dcfce7;
+  --shadow: 0 12px 28px rgba(20, 35, 31, 0.08);
+}
+
+:root[data-theme='dark'] {
+  --bg: #0d1715;
+  --surface: #12211e;
+  --card: #172824;
+  --hover: #1c3630;
+  --line: #29443e;
+  --line-strong: #3f7468;
+  --text: #ecfdf8;
+  --muted: #a1c5bb;
+  --faint: #7fa69c;
+  --accent: #2dd4bf;
+  --accent-strong: #5eead4;
+  --accent-soft: #123f39;
+  --info: #60a5fa;
+  --info-soft: #132f55;
+  --warn: #fbbf24;
+  --warn-soft: #493511;
+  --danger: #fb7185;
+  --danger-soft: #4a1722;
+  --success: #4ade80;
+  --success-soft: #143d25;
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+body,
+.notion-shell {
+  color: var(--text);
+  background:
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 28%),
+    linear-gradient(135deg, var(--bg), color-mix(in srgb, var(--info-soft) 38%, var(--bg)));
+}
+
+.notion-shell {
+  grid-template-columns: 220px 1fr;
+}
+
+.notion-sidebar {
+  padding: 10px 8px;
+  gap: 8px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  border-right: 1px solid var(--line);
+  box-shadow: 10px 0 30px rgba(20, 35, 31, 0.04);
+  backdrop-filter: blur(16px);
+}
+
+.sidebar-profile-block {
+  min-height: 46px;
+}
+
+.sidebar-profile {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--accent), var(--info));
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.sidebar-profile-text strong,
+.sidebar-profile-text span {
+  max-width: 138px;
+}
+
+.sidebar-search,
+.account-search {
+  height: 34px;
+  border-color: var(--line);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.sidebar-link {
+  height: 31px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.sidebar-link:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.sidebar-link.active {
+  color: var(--accent-strong);
+  background: linear-gradient(90deg, var(--accent-soft), color-mix(in srgb, var(--info-soft) 62%, transparent));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.notion-topbar {
+  height: 42px;
+  padding: 0 14px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(18px);
+}
+
+.topbar-title {
+  color: var(--muted);
+  font-size: 12px;
+  gap: 7px;
+}
+
+.topbar-title strong {
+  color: var(--text);
+}
+
+.topbar-actions {
+  gap: 5px;
+}
+
+.topbar-select,
+.circle-action,
+.table-icon-button,
+.compte-action-button,
+.mini-action {
+  border-radius: 8px;
+}
+
+.circle-action {
+  width: 32px;
+  height: 32px;
+  color: var(--muted);
+}
+
+.circle-action:hover {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.topbar-select {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--card);
+}
+
+.notion-hero {
+  display: none;
+}
+
+.page-canvas {
+  width: min(1380px, calc(100vw - 252px));
+  min-height: calc(100vh - 68px);
+  margin: 12px auto 24px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  box-shadow: var(--shadow);
+}
+
+.notion-card,
+.expenses-entry,
+.expenses-history,
+.transactions-import-main,
+.transactions-service-shortcuts,
+.register-client-card,
+.metric-box,
+.account-kpi-card,
+.unpaid-entry-panel,
+.visibility-box,
+.permission-role-block {
+  border-color: var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 6px 18px rgba(20, 35, 31, 0.045);
+}
+
+.notion-card,
+.transactions-import-main,
+.transactions-service-shortcuts,
+.expenses-entry,
+.expenses-history {
+  padding: 12px;
+}
+
+.panel-title,
+.table-caption {
+  min-height: 30px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.accounts-kpi-grid,
+.expense-kpis {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.account-kpi-card,
+.expense-kpis div {
+  min-height: 68px;
+  padding: 10px;
+  border-left: 3px solid var(--accent);
+}
+
+.account-kpi-icon {
+  width: 30px;
+  height: 30px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.account-kpi-label,
+.expense-kpis span {
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.account-kpi-value,
+.expense-kpis strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.accounts-toolbar,
+.report-toolbar,
+.register-toolbar,
+.cash-total-row,
+.unpaid-list-toolbar,
+.transaction-import-band {
+  min-height: 38px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.flow-board {
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+}
+
+.compte-box {
+  min-height: 142px;
+}
+
+.compte-border {
+  min-height: 142px;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 12px 12px 46px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 42%, transparent), transparent 46%),
+    var(--card);
+}
+
+.compte-border:hover {
+  transform: translateY(-1px);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+.compte-name {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.compte-solde {
+  margin-top: 18px;
+  color: var(--text);
+  font-size: 23px;
+}
+
+.compte-ledger-strip {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.compte-basis {
+  color: var(--accent-strong);
+  font-size: 10px;
+}
+
+.compte-actions-row {
+  bottom: 10px;
+  border-top-color: var(--line);
+}
+
+.form-field {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.form-field input,
+.form-field select,
+.settings-textarea,
+.desktop-date-input,
+.date-toggle-button,
+.transaction-import-table input,
+.transaction-import-table select {
+  min-height: 32px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.form-field input:focus,
+.form-field select:focus,
+.settings-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.transfer-submit,
+.expense-submit,
+.modal-cancel,
+.import-file-button,
+.upload-button,
+.settings-small-action {
+  min-height: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.transfer-submit,
+.expense-submit {
+  border: 0;
+  color: #ffffff;
+  background: linear-gradient(135deg, var(--accent-strong), var(--info));
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.modal-cancel,
+.settings-small-action,
+.import-file-button,
+.upload-button {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--card);
+}
+
+.desktop-table {
+  font-size: 13px;
+}
+
+.desktop-table th {
+  height: 32px;
+  padding: 9px 12px;
+  background: linear-gradient(135deg, var(--accent-strong), var(--info));
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+}
+
+.desktop-table td {
+  padding: 7px 9px;
+  border-bottom-color: var(--line);
+}
+
+.desktop-table tbody tr:hover {
+  background: var(--hover);
+}
+
+.account-movement-row,
+.unpaid-history-row,
+.unpaid-detail-card,
+.expense-row,
+.transaction-service-shortcut {
+  min-height: 42px;
+  border-color: var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.account-movement-row.in,
+.unpaid-history-row.add,
+.expense-row.income {
+  color: color-mix(in srgb, var(--success) 72%, var(--text));
+  background: var(--success-soft);
+}
+
+.account-movement-row.out,
+.unpaid-history-row.out,
+.expense-row.expense {
+  color: color-mix(in srgb, var(--danger) 76%, var(--text));
+  background: var(--danger-soft);
+}
+
+.transaction-service-panel,
+.transaction-workspace {
+  min-height: 420px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--surface);
+}
+
+.service-gradient-button {
+  min-width: 142px;
+  height: 44px;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 850;
+  box-shadow: 0 10px 20px rgba(20, 35, 31, 0.1);
+}
+
+.service-gradient-button.red-orange {
+  background: linear-gradient(135deg, #e11d48, #f59e0b);
+}
+
+.service-gradient-button.turquoise {
+  background: linear-gradient(135deg, #009688, #2563eb);
+}
+
+.service-gradient-button.orange {
+  background: linear-gradient(135deg, #f97316, #eab308);
+}
+
+.transactions-import-header h2,
+.transactions-import-header p,
+.expenses-head h2,
+.expenses-head p,
+.workflow-page-header h2,
+.workflow-page-header p,
+.settings-page h2,
+.settings-page p {
+  display: none;
+}
+
+.transactions-import-header,
+.expenses-head,
+.workflow-page-header {
+  min-height: 0;
+  margin-bottom: 8px;
+}
+
+.transaction-header {
+  min-height: 58px;
+  grid-template-columns: 34px 1fr 132px;
+}
+
+.transaction-header h2 {
+  display: none;
+}
+
+.service-picture {
+  height: 72px;
+  border-radius: 8px;
+}
+
+.operation-grid th,
+.operation-grid input {
+  height: 34px;
+  font-size: 14px;
+}
+
+.cash-tabs button {
+  min-height: 34px;
+  font-size: 13px;
+}
+
+.account-modal {
+  border-radius: 10px;
+}
+
+.empty-service-state,
+.transaction-empty-import {
+  color: var(--faint);
+  background: var(--surface);
+}
+
+@media (max-width: 1100px) {
+  .page-canvas {
+    width: calc(100vw - 104px);
+  }
+}
+
+@media (max-width: 760px) {
+  .page-canvas {
+    width: calc(100vw - 18px);
+    margin-top: 8px;
+    padding: 10px;
+  }
+
+  .notion-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+html[dir='rtl'] .notion-shell {
+  direction: rtl;
+  grid-template-columns: minmax(0, 1fr) 272px !important;
+  grid-template-areas: "workspace sidebar";
+}
+
+html[dir='rtl'] .notion-sidebar {
+  grid-area: sidebar !important;
+  grid-column: 2 !important;
+  grid-row: 1;
+  border-right: 0;
+  border-left: 1px solid var(--line);
+}
+
+html[dir='rtl'] .notion-workspace {
+  grid-area: workspace !important;
+  grid-column: 1 !important;
+  grid-row: 1;
+}
+
+@media (max-width: 1100px) {
+  html[dir='rtl'] .notion-shell {
+    grid-template-columns: minmax(0, 1fr) 72px !important;
+  }
+}
+
+@media (max-width: 760px) {
+  html[dir='rtl'] .notion-shell {
+    grid-template-columns: 1fr !important;
+    grid-template-areas:
+      "sidebar"
+      "workspace";
+  }
+
+  html[dir='rtl'] .notion-sidebar,
+  html[dir='rtl'] .notion-workspace {
+    grid-column: 1 !important;
   }
 }

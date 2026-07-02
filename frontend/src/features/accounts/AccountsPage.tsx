@@ -1,10 +1,12 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import { ArrowDownToLine, ArrowRightLeft, Banknote, ChevronDown, History, Landmark, Minus, Plus, RefreshCw, Save, Search, Send, Settings2, TrendingDown, TrendingUp, X, type LucideIcon } from 'lucide-react';
-import { acceptInterAgencyTransfer, api, cancelInterAgencyTransfer, createAccount, createInterAgencyTransfer, getAccountContributions, getAccountsScreenSettings, getAppSettings, listAgencyTransferRules, listInterAgencyTransfers, saveAccountsScreenSettings, updateAccountBalance } from '../../api';
+import { acceptInterAgencyTransfer, api, cancelInterAgencyTransfer, createAccount, createInterAgencySettlement, createInterAgencyTransfer, getAccountContributions, getAccountsScreenSettings, getAppSettings, listAgencyAccounts, listAgencyTransferRules, listInterAgencySettlements, listInterAgencyTransfers, saveAccountsScreenSettings, updateAccountBalance } from '../../api';
+import { Language, tr } from '../../i18n';
 import { can } from '../../permissions';
 import { CircleButton } from '../../shared/ui/CircleButton';
 import { Panel } from '../../shared/ui/Panel';
-import { Account, AccountContributionEntry, AccountMovementEntry, AgencyTransferRule, AppSettings, CurrentUser, Dashboard, InterAgencyTransfer, ScreenId, TransferContribution } from '../../types';
+import { Account, AccountContributionEntry, AccountMovementEntry, AgencyTransferRule, AppSettings, CurrentUser, Dashboard, InterAgencySettlement, InterAgencyTransfer, ScreenId, TransferContribution } from '../../types';
+import { arAccountName, arText } from '../../utils/arabic';
 import { money } from '../../utils/format';
 import { actionTargets, AccountActionSlot, AccountButtonWidget, AccountCardConfig, AccountCardConfigMap, getAccountCardConfig, loadAccountCardConfigs, normalizeAccountCardConfig, renderTextWidget, saveAccountCardConfigs } from './accountCardConfig';
 import { CompteBox } from './CompteBox';
@@ -13,6 +15,7 @@ type AccountsPageProps = {
   accounts: Account[];
   dashboard: Dashboard | null;
   currentUser: CurrentUser | null;
+  language: Language;
   onRefresh: () => void;
   onNavigate: (screen: ScreenId) => void;
 };
@@ -31,7 +34,8 @@ type ContributorCard = {
 
 const accountOrderStorageKey = 'rdet_accounts_order';
 
-export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNavigate }: AccountsPageProps) {
+export function AccountsPage({ accounts, dashboard, currentUser, language, onRefresh, onNavigate }: AccountsPageProps) {
+  const t = (key: string) => tr(key, language);
   const [query, setQuery] = useState('');
   const [configs, setConfigs] = useState<AccountCardConfigMap>(() => loadAccountCardConfigs());
   const [appSettings, setAppSettings] = useState<Partial<AppSettings>>({});
@@ -57,8 +61,10 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [newAccountName, setNewAccountName] = useState('');
   const [newAccountBalance, setNewAccountBalance] = useState('0');
+  const [newAccountSide, setNewAccountSide] = useState<'debit' | 'credit'>('debit');
   const [editingBalanceAccount, setEditingBalanceAccount] = useState<Account | null>(null);
   const [manualBalance, setManualBalance] = useState('');
+  const [manualAccountSide, setManualAccountSide] = useState<'debit' | 'credit'>('debit');
   const [detailsAccount, setDetailsAccount] = useState<Account | null>(null);
   const [detailsRows, setDetailsRows] = useState<AccountMovementEntry[]>([]);
   const [contributionAccountId, setContributionAccountId] = useState(accounts[0] ? String(accounts[0].id) : '');
@@ -67,10 +73,17 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
   const [historyContributorName, setHistoryContributorName] = useState('');
   const [interAgencyRules, setInterAgencyRules] = useState<AgencyTransferRule[]>([]);
   const [incomingTransfers, setIncomingTransfers] = useState<InterAgencyTransfer[]>([]);
+  const [acceptedTransfers, setAcceptedTransfers] = useState<InterAgencyTransfer[]>([]);
+  const [settlements, setSettlements] = useState<InterAgencySettlement[]>([]);
   const [interAgencyOpen, setInterAgencyOpen] = useState(false);
+  const [interAgencyMode, setInterAgencyMode] = useState<'send' | 'return'>('send');
   const [interAgencyRuleId, setInterAgencyRuleId] = useState('');
   const [interAgencyAmount, setInterAgencyAmount] = useState('');
   const [interAgencyNote, setInterAgencyNote] = useState('');
+  const [returnTransferId, setReturnTransferId] = useState('');
+  const [returnPayerAccountId, setReturnPayerAccountId] = useState('');
+  const [returnReceiverAccountId, setReturnReceiverAccountId] = useState('');
+  const [returnReceiverAccounts, setReturnReceiverAccounts] = useState<Account[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -104,6 +117,16 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
   const canUseTransfer = can(currentUser, appSettings, 'accounts', 'transfer');
   const canUseMovement = can(currentUser, appSettings, 'accounts', 'movement');
   const activeInterAgencyRules = interAgencyRules.filter((rule) => rule.status === 'active' && rule.active && rule.source_agency_id === currentUser?.company_id);
+  const returnableTransfers = acceptedTransfers.filter((item) => item.status === 'accepted' && item.destination_agency_id === currentUser?.company_id);
+  const selectedReturnTransfer = returnableTransfers.find((item) => String(item.id) === returnTransferId) ?? returnableTransfers[0] ?? null;
+  const settlementTotals = useMemo(() => {
+    return settlements.reduce((totals, item) => {
+      const amountValue = Number(item.amount || 0);
+      if (item.status === 'accepted') totals.accepted += amountValue;
+      if (item.status === 'pending') totals.pending += amountValue;
+      return totals;
+    }, { accepted: 0, pending: 0 });
+  }, [settlements]);
 
   const contributorCards = useMemo(() => {
     const cards = new Map<string, ContributorCard>();
@@ -175,18 +198,40 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
   }, [contributionAccountId]);
 
   async function refreshInterAgency() {
-    const [rules, transfers] = await Promise.all([
+    const [rules, transfers, settlementRows] = await Promise.all([
       listAgencyTransferRules().catch(() => []),
-      listInterAgencyTransfers('pending_receiver').catch(() => []),
+      listInterAgencyTransfers().catch(() => []),
+      listInterAgencySettlements().catch(() => []),
     ]);
     setInterAgencyRules(rules);
-    setIncomingTransfers(transfers.filter((item) => item.destination_agency_id === currentUser?.company_id));
+    setIncomingTransfers(transfers.filter((item) => item.status === 'pending_receiver' && item.destination_agency_id === currentUser?.company_id));
+    setAcceptedTransfers(transfers.filter((item) => item.status === 'accepted'));
+    setSettlements(settlementRows);
   }
 
   useEffect(() => {
     if (!currentUser?.company_id) return;
     refreshInterAgency().catch(() => undefined);
   }, [currentUser?.company_id]);
+
+  useEffect(() => {
+    if (!selectedReturnTransfer) {
+      setReturnReceiverAccounts([]);
+      setReturnReceiverAccountId('');
+      return;
+    }
+    setReturnTransferId(String(selectedReturnTransfer.id));
+    setReturnReceiverAccountId(String(selectedReturnTransfer.source_account_id));
+    setReturnPayerAccountId((current) => current || String(accounts[0]?.id ?? ''));
+    listAgencyAccounts(selectedReturnTransfer.source_agency_id)
+      .then((rows) => {
+        setReturnReceiverAccounts(rows);
+        if (!rows.some((account) => account.id === selectedReturnTransfer.source_account_id)) {
+          setReturnReceiverAccountId(String(rows[0]?.id ?? selectedReturnTransfer.source_account_id));
+        }
+      })
+      .catch(() => setReturnReceiverAccounts([]));
+  }, [selectedReturnTransfer?.id, accounts.length]);
 
   const historyContributor = contributorCards.find((card) => card.name === historyContributorName) ?? null;
   const popupContributorNames = useMemo(() => {
@@ -219,7 +264,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
 
   function openAction(account: Account, kind: AccountActionSlot, accountConfig: AccountCardConfig) {
     if (!canUseAccountActions || (kind === 'transfer' && !canUseTransfer) || (kind === 'versement' && !canUseMovement)) {
-      setError('Action non autorisee pour cet utilisateur.');
+      setError(t('noPermission'));
       return;
     }
     const target = actionTargets[kind];
@@ -363,7 +408,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
           body: JSON.stringify({
             person_name: personName || activeAction.account.name,
             amount,
-            description: description || `Non paye lie a ${activeAction.account.name}`,
+            description: description || `${t('unpaid')} ${activeAction.account.name}`,
           }),
         });
       }
@@ -382,7 +427,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
 
   async function submitInterAgencyTransfer() {
     if (!interAgencyRuleId || Number(interAgencyAmount) <= 0) {
-      setError('Choisir une regle et un montant valide.');
+      setError(t('completeSendError'));
       return;
     }
     setSaving(true);
@@ -398,7 +443,33 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
       setInterAgencyNote('');
       await refreshInterAgency();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Transfert inter-agence impossible.');
+      setError(err instanceof Error ? err.message : t('sendTransferFailed'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submitInterAgencyReturn() {
+    if (!selectedReturnTransfer || !returnPayerAccountId || !returnReceiverAccountId || Number(interAgencyAmount) <= 0) {
+      setError(t('completeReturnError'));
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await createInterAgencySettlement({
+        inter_agency_transfer_id: selectedReturnTransfer.id,
+        payer_account_id: Number(returnPayerAccountId),
+        receiver_account_id: Number(returnReceiverAccountId),
+        amount: interAgencyAmount,
+        note: interAgencyNote || undefined,
+      });
+      setInterAgencyOpen(false);
+      setInterAgencyAmount('');
+      setInterAgencyNote('');
+      await refreshInterAgency();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('returnRequestFailed'));
     } finally {
       setSaving(false);
     }
@@ -416,7 +487,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
       await refreshInterAgency();
       await onRefresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Decision impossible.');
+      setError(err instanceof Error ? err.message : t('decisionFailed'));
     } finally {
       setSaving(false);
     }
@@ -434,10 +505,11 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
     setSaving(true);
     setError('');
     try {
-      await createAccount({ name: newAccountName.trim(), balance: newAccountBalance || '0', visible: true });
+      await createAccount({ name: newAccountName.trim(), balance: newAccountBalance || '0', visible: true, normal_balance_side: newAccountSide });
       setCreatingAccount(false);
       setNewAccountName('');
       setNewAccountBalance('0');
+      setNewAccountSide('debit');
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Creation du compte impossible.');
@@ -455,7 +527,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
     setSaving(true);
     setError('');
     try {
-      await updateAccountBalance(editingBalanceAccount.id, manualBalance || '0');
+      await updateAccountBalance(editingBalanceAccount.id, manualBalance || '0', manualAccountSide);
       setEditingBalanceAccount(null);
       await onRefresh();
     } catch (err) {
@@ -468,24 +540,25 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
   return (
     <div className="space-y-4">
       <div className="accounts-kpi-grid">
-        <KpiCard icon={Landmark} label="Solde total" value={money(dashboard?.total_balance ?? 0)} />
-        <KpiCard icon={TrendingUp} label="Versements jour" value={money(dashboard?.service_in ?? 0)} />
-        <KpiCard icon={TrendingDown} label="Retraits jour" value={money(dashboard?.service_out ?? 0)} />
-        <KpiCard icon={Banknote} label="Non paye" value={money(dashboard?.unpaid_total ?? 0)} />
+        <KpiCard icon={Landmark} label={t('totalBalance')} value={money(dashboard?.total_balance ?? 0)} />
+        <KpiCard icon={TrendingUp} label={t('debitTotal')} value={money(dashboard?.total_debit ?? 0)} />
+        <KpiCard icon={TrendingDown} label={t('creditTotal')} value={money(dashboard?.total_credit ?? 0)} />
+        <KpiCard icon={TrendingUp} label={t('todayDeposits')} value={money(dashboard?.service_in ?? 0)} />
+        <KpiCard icon={Banknote} label={t('unpaid')} value={money(dashboard?.unpaid_total ?? 0)} />
       </div>
 
       <div className="accounts-toolbar">
         <label className="account-search">
           <Search className="h-4 w-4" />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Rechercher un compte..." />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('accountSearch')} />
         </label>
         <div className="account-toolbar-actions">
-          <div className="account-count">{filteredAccounts.length} comptes, {visibleAccounts} visibles, {positiveAccounts} positifs</div>
-          {canUseTransfer && <CircleButton title="Transfert inter-agence" icon={Send} onClick={() => { setError(''); setInterAgencyOpen(true); setInterAgencyRuleId(activeInterAgencyRules[0] ? String(activeInterAgencyRules[0].id) : ''); }} />}
-          {canCreateAccount && <CircleButton title="Ajouter compte" icon={Plus} onClick={() => { setError(''); setCreatingAccount(true); }} />}
-          {orderDirty && <CircleButton title="Enregistrer ordre" icon={Save} onClick={saveAccountOrder} />}
-          {canConfigureCards && <CircleButton title="Configurer cartes" icon={Settings2} onClick={() => onNavigate('account-settings')} />}
-          <CircleButton title="Actualiser" icon={RefreshCw} onClick={onRefresh} />
+          <div className="account-count">{filteredAccounts.length} {t('accountsCount')}, {visibleAccounts} {t('visible')}, {positiveAccounts} {t('positive')}</div>
+          {canUseTransfer && <CircleButton title={t('interAgencyTransfers')} icon={Send} onClick={() => { setError(''); setInterAgencyMode(activeInterAgencyRules.length ? 'send' : 'return'); setInterAgencyOpen(true); setInterAgencyRuleId(activeInterAgencyRules[0] ? String(activeInterAgencyRules[0].id) : ''); setReturnTransferId(returnableTransfers[0] ? String(returnableTransfers[0].id) : ''); }} />}
+          {canCreateAccount && <CircleButton title={t('createAccount')} icon={Plus} onClick={() => { setError(''); setCreatingAccount(true); }} />}
+          {orderDirty && <CircleButton title={t('saveOrder')} icon={Save} onClick={saveAccountOrder} />}
+          {canConfigureCards && <CircleButton title={t('cardSettings')} icon={Settings2} onClick={() => onNavigate('account-settings')} />}
+          <CircleButton title={tr('refresh', language)} icon={RefreshCw} onClick={onRefresh} />
         </div>
       </div>
 
@@ -493,22 +566,22 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
         <section className="incoming-transfer-strip">
           <div className="config-section-header">
             <div>
-              <h3>Incoming Transfers</h3>
+              <h3>{t('incomingTransfers')}</h3>
             </div>
-            <CircleButton title="Historique" icon={History} onClick={() => onNavigate('inter-agency-transfers')} />
+            <CircleButton title={t('history')} icon={History} onClick={() => onNavigate('inter-agency-transfers')} />
           </div>
           <div className="incoming-transfer-grid">
             {incomingTransfers.map((item) => (
               <article className="incoming-transfer-card" key={item.id}>
                 <div>
                   <strong>{item.source_agency_name ?? 'Agence'}</strong>
-                  <span>{item.source_account_name ?? 'Compte'} {'->'} {item.destination_account_name ?? 'Compte'}</span>
+                  <span>{arAccountName(item.source_account_name ?? t('account'))} ← {arAccountName(item.destination_account_name ?? t('account'))}</span>
                   {item.note && <small>{item.note}</small>}
                 </div>
                 <b>{money(item.amount)}</b>
                 <div className="incoming-transfer-actions">
-                  <button disabled={saving} onClick={() => decideIncomingTransfer(item.id, 'accept')}>Accept</button>
-                  <button disabled={saving} onClick={() => decideIncomingTransfer(item.id, 'cancel')}>Cancel</button>
+                  <button disabled={saving} onClick={() => decideIncomingTransfer(item.id, 'accept')}>{t('accept')}</button>
+                  <button disabled={saving} onClick={() => decideIncomingTransfer(item.id, 'cancel')}>{t('reject')}</button>
                 </div>
               </article>
             ))}
@@ -546,6 +619,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
                   setError('');
                   setEditingBalanceAccount(account);
                   setManualBalance(String(account.balance ?? '0'));
+                  setManualAccountSide(account.normal_balance_side ?? 'debit');
                 } : undefined}
                 onAction={(kind) => openAction(account, kind, config)}
                 onDetails={canOpenDetails ? () => openAccountDetails(account) : undefined}
@@ -557,29 +631,38 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
 
       {detailsAccount && (
         <div className="account-modal-backdrop" role="presentation">
-          <div className="account-modal" role="dialog" aria-modal="true" aria-label="Details compte">
-            <Panel title={`Details ${detailsAccount.name}`} icon={History}>
+          <div className="account-modal" role="dialog" aria-modal="true" aria-label={t('accountDetails')}>
+            <Panel title={`${t('details')} ${arAccountName(detailsAccount.name)}`} icon={History}>
               <div className="transfer-panel">
                 <div className="transfer-panel-header">
                   <div className="history-summary-line">
-                    <div className="transfer-source">{detailsAccount.name}</div>
-                    <div className="transfer-balance">Solde: {money(detailsAccount.balance)}</div>
+                    <div className="transfer-source">{arAccountName(detailsAccount.name)}</div>
+                    <div className="transfer-balance">{t('totalBalance')}: {money(detailsAccount.balance)} - {t('debit')} {money(detailsAccount.debit_total ?? 0)} - {t('credit')} {money(detailsAccount.credit_total ?? 0)}</div>
                   </div>
-                  <button className="circle-action" title="Fermer" onClick={() => setDetailsAccount(null)}>
+                  <button className="circle-action" title={t('close')} onClick={() => setDetailsAccount(null)}>
                     <X className="h-4 w-4" />
                   </button>
+                </div>
+                <div className="account-movement-header">
+                  <span>{t('date')}</span>
+                  <span>{t('note')}</span>
+                  <strong>{t('debit')}</strong>
+                  <strong>{t('credit')}</strong>
+                  <strong>{t('action')}</strong>
                 </div>
                 <div className="account-movement-list">
                   {detailsRows.map((row) => (
                     <div className={`account-movement-row ${row.direction}`} key={row.id}>
                       <span>{new Date(row.occurred_at).toLocaleDateString()}</span>
                       <small>
-                        {row.description ?? (row.direction === 'in' ? `Depuis ${row.from_account_name ?? 'externe'}` : `Vers ${row.to_account_name ?? 'externe'}`)}
+                        {row.description ?? (row.direction === 'in' ? `${t('fromAccount')} ${arAccountName(row.from_account_name) || '-'}` : `${t('targetAccount')} ${arAccountName(row.to_account_name) || '-'}`)}
                       </small>
-                      <strong>{row.direction === 'in' ? '+' : '-'}{money(row.amount)}</strong>
+                      <b>{Number(row.debit || 0) ? money(row.debit) : '-'}</b>
+                      <b>{Number(row.credit || 0) ? money(row.credit) : '-'}</b>
+                      <strong>{Number(row.balance_effect || 0) >= 0 ? '+' : '-'}{money(Math.abs(Number(row.balance_effect || 0)))}</strong>
                     </div>
                   ))}
-                  {!detailsRows.length && <div className="empty-service-state">Aucun mouvement.</div>}
+                  {!detailsRows.length && <div className="empty-service-state">{t('accountMovementsEmpty')}</div>}
                 </div>
               </div>
             </Panel>
@@ -590,13 +673,13 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
       <section className="contribution-section">
         <div className="config-section-header">
           <div>
-            <h3>Details des contributions</h3>
-            <div className="formula-help">Filtrer par compte pour voir l'historique des contributeurs: versement en vert, retrait en rouge.</div>
+            <h3>{t('details')} {t('contributor')}</h3>
+            <div className="formula-help">{t('selectAccount')}</div>
           </div>
           <label className="form-field contribution-filter">
-            Compte
+            {t('account')}
             <select value={contributionAccountId} onChange={(event) => setContributionAccountId(event.target.value)}>
-              {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+              {accounts.map((account) => <option key={account.id} value={account.id}>{arAccountName(account.name)}</option>)}
             </select>
           </label>
         </div>
@@ -605,29 +688,29 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
             <article className="unpaid-detail-card contribution-person-card" key={card.name}>
               <button className="unpaid-person-main" type="button" onClick={() => setHistoryContributorName(card.name)}>
                 <strong>{card.name}</strong>
-                <span>{selectedContributionAccount?.name ?? 'Compte'} - {card.entries.length} mouvements</span>
+                <span>{arAccountName(selectedContributionAccount?.name) || t('account')} - {card.entries.length}</span>
               </button>
               <b className={card.total >= 0 ? '' : 'negative'}>{card.total >= 0 ? '+' : '-'}{money(Math.abs(card.total))}</b>
-              {canUseMovement && <button className="mini-action add" title="Versement" type="button" onClick={() => openContributorMovement(card, 'versement')}><Plus className="h-4 w-4" /></button>}
-              {canUseMovement && <button className="mini-action out" title="Retrait" type="button" onClick={() => openContributorMovement(card, 'retrait')}><Minus className="h-4 w-4" /></button>}
-              <CircleButton title="History" icon={History} onClick={() => setHistoryContributorName(card.name)} />
+              {canUseMovement && <button className="mini-action add" title={tr('interAgencySend', language)} type="button" onClick={() => openContributorMovement(card, 'versement')}><Plus className="h-4 w-4" /></button>}
+              {canUseMovement && <button className="mini-action out" title={tr('interAgencyReturn', language)} type="button" onClick={() => openContributorMovement(card, 'retrait')}><Minus className="h-4 w-4" /></button>}
+              <CircleButton title={t('history')} icon={History} onClick={() => setHistoryContributorName(card.name)} />
             </article>
           ))}
-          {!contributorCards.length && <div className="empty-service-state">Aucune contribution pour ce compte.</div>}
+          {!contributorCards.length && <div className="empty-service-state">{t('empty')}</div>}
         </div>
       </section>
 
       {historyContributor && (
         <div className="account-modal-backdrop" role="presentation">
-          <div className="account-modal" role="dialog" aria-modal="true" aria-label="Historique contributeur">
-            <Panel title={`Historique ${historyContributor.name}`} icon={ChevronDown}>
+          <div className="account-modal" role="dialog" aria-modal="true" aria-label={t('history')}>
+            <Panel title={`${t('history')} ${historyContributor.name}`} icon={ChevronDown}>
               <div className="transfer-panel">
                 <div className="transfer-panel-header">
                   <div className="history-summary-line">
                     <div className="transfer-source">{historyContributor.name}</div>
-                    <div className="transfer-balance">Total: {historyContributor.total >= 0 ? '+' : '-'}{money(Math.abs(historyContributor.total))}</div>
+                    <div className="transfer-balance">{t('totalBalance')}: {historyContributor.total >= 0 ? '+' : '-'}{money(Math.abs(historyContributor.total))}</div>
                   </div>
-                  <button className="circle-action" title="Fermer" onClick={() => setHistoryContributorName('')}>
+                  <button className="circle-action" title={t('close')} onClick={() => setHistoryContributorName('')}>
                     <X className="h-4 w-4" />
                   </button>
                 </div>
@@ -635,7 +718,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
                   {historyContributor.entries.map((entry) => (
                     <div className={`contribution-person ${entry.contribution.direction}`} key={`${historyContributor.name}-${entry.id}-${entry.occurred_at}`}>
                       <span>{new Date(entry.occurred_at).toLocaleDateString()}</span>
-                      <small>{entry.description ?? (entry.contribution.direction === 'versement' ? 'Versement' : 'Retrait')}</small>
+                      <small>{entry.description ?? (entry.contribution.direction === 'versement' ? tr('interAgencySend', language) : tr('interAgencyReturn', language))}</small>
                       <strong>{entry.signedAmount >= 0 ? '+' : '-'}{money(Math.abs(entry.signedAmount))}</strong>
                     </div>
                   ))}
@@ -648,26 +731,33 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
 
       {editingBalanceAccount && (
         <div className="account-modal-backdrop" role="presentation">
-          <div className="account-modal" role="dialog" aria-modal="true" aria-label="Modifier solde">
-            <Panel title="Modifier solde" icon={Banknote}>
+          <div className="account-modal" role="dialog" aria-modal="true" aria-label={t('editBalance')}>
+            <Panel title={t('editBalance')} icon={Banknote}>
               <div className="transfer-panel">
                 <div className="transfer-panel-header">
                   <div className="history-summary-line">
-                    <div className="transfer-source">{editingBalanceAccount.name}</div>
-                    <div className="transfer-balance">Ancien solde: {money(editingBalanceAccount.previous_balance ?? editingBalanceAccount.balance)}</div>
+                    <div className="transfer-source">{arAccountName(editingBalanceAccount.name)}</div>
+                    <div className="transfer-balance">{t('previousBalance')}: {money(editingBalanceAccount.previous_balance ?? editingBalanceAccount.balance)}</div>
                   </div>
-                  <button className="circle-action" title="Fermer" onClick={() => !saving && setEditingBalanceAccount(null)}>
+                  <button className="circle-action" title={t('close')} onClick={() => !saving && setEditingBalanceAccount(null)}>
                     <X className="h-4 w-4" />
                   </button>
                 </div>
                 <label className="form-field">
-                  Nouveau solde
+                  {t('newBalance')}
                   <input value={manualBalance} inputMode="decimal" onChange={(event) => setManualBalance(event.target.value)} placeholder="0.00" />
+                </label>
+                <label className="form-field">
+                  {t('accountBase')}
+                  <select value={manualAccountSide} onChange={(event) => setManualAccountSide(event.target.value as 'debit' | 'credit')}>
+                    <option value="debit">{t('baseDebit')}</option>
+                    <option value="credit">{t('baseCredit')}</option>
+                  </select>
                 </label>
                 {error && <div className="transfer-error">{error}</div>}
                 <div className="modal-actions">
-                  <button className="modal-cancel" disabled={saving} onClick={() => setEditingBalanceAccount(null)}>Annuler</button>
-                  <button className="transfer-submit" disabled={saving} onClick={submitManualBalance}>{saving ? 'Enregistrement...' : 'Enregistrer solde'}</button>
+                  <button className="modal-cancel" disabled={saving} onClick={() => setEditingBalanceAccount(null)}>{t('cancel')}</button>
+                  <button className="transfer-submit" disabled={saving} onClick={submitManualBalance}>{saving ? t('saveProgress') : t('saveBalance')}</button>
                 </div>
               </div>
             </Panel>
@@ -677,32 +767,39 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
 
       {creatingAccount && (
         <div className="account-modal-backdrop" role="presentation">
-          <div className="account-modal" role="dialog" aria-modal="true" aria-label="Ajouter compte">
-            <Panel title="Ajouter compte" icon={Plus}>
+          <div className="account-modal" role="dialog" aria-modal="true" aria-label={t('createAccount')}>
+            <Panel title={t('createAccount')} icon={Plus}>
               <div className="transfer-panel">
                 <div className="transfer-panel-header">
                   <div>
-                    <div className="transfer-source">Nouveau compte</div>
-                    <div className="transfer-balance">Agence active</div>
+                    <div className="transfer-source">{t('newAccount')}</div>
+                    <div className="transfer-balance">{t('currentAgency')}</div>
                   </div>
-                  <button className="circle-action" title="Fermer" onClick={() => !saving && setCreatingAccount(false)}>
+                  <button className="circle-action" title={t('close')} onClick={() => !saving && setCreatingAccount(false)}>
                     <X className="h-4 w-4" />
                   </button>
                 </div>
                 <div className="settings-grid">
                   <label className="form-field settings-wide">
-                    Nom du compte
-                    <input value={newAccountName} onChange={(event) => setNewAccountName(event.target.value)} placeholder="Ex: Cash principal" />
+                    {t('accountName')}
+                    <input value={newAccountName} onChange={(event) => setNewAccountName(event.target.value)} placeholder={t('exampleAccount')} />
                   </label>
                   <label className="form-field settings-wide">
-                    Solde initial
+                    {t('initialBalance')}
                     <input value={newAccountBalance} inputMode="decimal" onChange={(event) => setNewAccountBalance(event.target.value)} placeholder="0.00" />
+                  </label>
+                  <label className="form-field settings-wide">
+                    {t('accountBase')}
+                    <select value={newAccountSide} onChange={(event) => setNewAccountSide(event.target.value as 'debit' | 'credit')}>
+                      <option value="debit">{t('baseDebit')}</option>
+                      <option value="credit">{t('baseCredit')}</option>
+                    </select>
                   </label>
                 </div>
                 {error && <div className="transfer-error">{error}</div>}
                 <div className="modal-actions">
-                  <button className="modal-cancel" disabled={saving} onClick={() => setCreatingAccount(false)}>Annuler</button>
-                  <button className="transfer-submit" disabled={saving} onClick={submitNewAccount}>{saving ? 'Creation...' : 'Creer compte'}</button>
+                  <button className="modal-cancel" disabled={saving} onClick={() => setCreatingAccount(false)}>{t('cancel')}</button>
+                  <button className="transfer-submit" disabled={saving} onClick={submitNewAccount}>{saving ? t('createProgress') : t('createAccount')}</button>
                 </div>
               </div>
             </Panel>
@@ -712,43 +809,87 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
 
       {interAgencyOpen && (
         <div className="account-modal-backdrop" role="presentation">
-          <div className="account-modal" role="dialog" aria-modal="true" aria-label="Transfert inter-agence">
-            <Panel title="Transfert inter-agence" icon={Send}>
+          <div className="account-modal" role="dialog" aria-modal="true" aria-label={t('interAgencyTransfers')}>
+            <Panel title={t('interAgencyTransfers')} icon={Send}>
               <div className="transfer-panel">
                 <div className="transfer-panel-header">
                   <div>
-                    <div className="transfer-source">Demande de transfert</div>
-                    <div className="transfer-balance">Validation par l'agence destinataire</div>
+                    <div className="transfer-source">{interAgencyMode === 'send' ? t('interAgencySend') : t('interAgencyReturn')}</div>
+                    <div className="transfer-balance">{interAgencyMode === 'send' ? t('pendingReceiver') : t('pendingAgency')}</div>
                   </div>
-                  <button className="circle-action" title="Fermer" onClick={() => !saving && setInterAgencyOpen(false)}>
+                  <button className="circle-action" title={t('close')} onClick={() => !saving && setInterAgencyOpen(false)}>
                     <X className="h-4 w-4" />
                   </button>
                 </div>
+                <div className="operation-toggle settings-wide">
+                  <button type="button" className={interAgencyMode === 'send' ? 'active' : ''} onClick={() => setInterAgencyMode('send')}>{t('interAgencySend')}</button>
+                  <button type="button" className={interAgencyMode === 'return' ? 'active' : ''} onClick={() => setInterAgencyMode('return')}>{t('interAgencyReturn')}</button>
+                </div>
+                {interAgencyMode === 'send' && (
+                  <label className="form-field">
+                    {t('transferRules')}
+                    <select value={interAgencyRuleId} onChange={(event) => setInterAgencyRuleId(event.target.value)}>
+                      <option value="">{t('selectRule')}</option>
+                      {activeInterAgencyRules.map((rule) => (
+                        <option key={rule.id} value={rule.id}>
+                          {rule.name} - {arAccountName(rule.source_account_name)} → {rule.destination_agency_name}/{arAccountName(rule.destination_account_name)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {interAgencyMode === 'return' && (
+                  <>
+                    <label className="form-field">
+                      {t('debtOriginalAccount')}
+                      <select value={returnTransferId} onChange={(event) => setReturnTransferId(event.target.value)}>
+                        <option value="">{t('selectDebt')}</option>
+                        {returnableTransfers.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {arAccountName(item.source_account_name)} - {t('amount')} {money(item.amount)} - {t('returnAccepted')} {money(item.settled_amount ?? 0)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      {t('fromAccount')}
+                      <select value={returnPayerAccountId} onChange={(event) => setReturnPayerAccountId(event.target.value)}>
+                        <option value="">{t('selectAccount')}</option>
+                        {accounts.map((account) => <option key={account.id} value={account.id}>{arAccountName(account.name)}</option>)}
+                      </select>
+                    </label>
+                    <label className="form-field">
+                      {t('targetAccount')}
+                      <select value={returnReceiverAccountId} onChange={(event) => setReturnReceiverAccountId(event.target.value)}>
+                        <option value="">{t('selectAccount')}</option>
+                        {returnReceiverAccounts.map((account) => <option key={account.id} value={account.id}>{arAccountName(account.name)}</option>)}
+                      </select>
+                    </label>
+                    <div className="settlement-simple-summary">
+                      <span>{t('returnAccepted')}: <b>{money(settlementTotals.accepted)}</b></span>
+                      <span>{t('returnPending')}: <b>{money(settlementTotals.pending)}</b></span>
+                    </div>
+                  </>
+                )}
                 <label className="form-field">
-                  Regle
-                  <select value={interAgencyRuleId} onChange={(event) => setInterAgencyRuleId(event.target.value)}>
-                    <option value="">Selectionner</option>
-                    {activeInterAgencyRules.map((rule) => (
-                      <option key={rule.id} value={rule.id}>
-                        {rule.name} - {rule.source_account_name} vers {rule.destination_agency_name}/{rule.destination_account_name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
-                  Montant
+                  {t('amount')}
                   <input value={interAgencyAmount} inputMode="decimal" onChange={(event) => setInterAgencyAmount(event.target.value)} placeholder="0.00" />
                 </label>
                 <label className="form-field">
-                  Note
-                  <input value={interAgencyNote} onChange={(event) => setInterAgencyNote(event.target.value)} placeholder="Note" />
+                  {t('note')}
+                  <input value={interAgencyNote} onChange={(event) => setInterAgencyNote(event.target.value)} placeholder={t('note')} />
                 </label>
-                {!activeInterAgencyRules.length && <div className="empty-service-state">Aucune regle active. Creez et faites accepter une regle dans Inter-agency.</div>}
+                {interAgencyMode === 'send' && !activeInterAgencyRules.length && <div className="empty-service-state">{t('noAcceptedRule')}</div>}
+                {interAgencyMode === 'return' && !returnableTransfers.length && <div className="empty-service-state">{t('noAcceptedDebt')}</div>}
                 {error && <div className="transfer-error">{error}</div>}
                 <div className="modal-actions">
-                  <button className="modal-cancel" disabled={saving} onClick={() => setInterAgencyOpen(false)}>Annuler</button>
-                  <button className="transfer-submit" disabled={saving || !activeInterAgencyRules.length} onClick={submitInterAgencyTransfer}>
-                    {saving ? 'Envoi...' : 'Envoyer'}
+                  <button className="modal-cancel" disabled={saving} onClick={() => setInterAgencyOpen(false)}>{t('cancel')}</button>
+                  <button
+                    className="transfer-submit"
+                    disabled={saving || (interAgencyMode === 'send' ? !activeInterAgencyRules.length : !returnableTransfers.length)}
+                    onClick={interAgencyMode === 'send' ? submitInterAgencyTransfer : submitInterAgencyReturn}
+                  >
+                    {saving ? t('saveProgress') : interAgencyMode === 'send' ? t('interAgencySend') : t('requestReturn')}
                   </button>
                 </div>
               </div>
@@ -759,15 +900,15 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
 
       {activeAction && (
         <div className="account-modal-backdrop" role="presentation">
-          <div className="account-modal" role="dialog" aria-modal="true" aria-label={modalTitle(activeAction.kind, activeAction.config.popups)}>
-            <Panel title={modalTitle(activeAction.kind, activeAction.config.popups)} icon={activeAction.kind === 'versement' ? ArrowDownToLine : ArrowRightLeft}>
+          <div className="account-modal" role="dialog" aria-modal="true" aria-label={arText(modalTitle(activeAction.kind, activeAction.config.popups))}>
+            <Panel title={arText(modalTitle(activeAction.kind, activeAction.config.popups))} icon={activeAction.kind === 'versement' ? ArrowDownToLine : ArrowRightLeft}>
               <div className="transfer-panel">
                 <div className="transfer-panel-header">
                   <div className="history-summary-line">
-                    <div className="transfer-source">{activeAction.account.name}</div>
+                    <div className="transfer-source">{arAccountName(activeAction.account.name)}</div>
                     <div className="transfer-balance">{money(activeAction.account.balance)}</div>
                   </div>
-                  <button className="circle-action" title="Fermer" onClick={closePopup}>
+                  <button className="circle-action" title={t('close')} onClick={closePopup}>
                     <X className="h-4 w-4" />
                   </button>
                 </div>
@@ -776,37 +917,37 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
                   <div className="transfer-grid single-operation">
                     {!activeAction.config.popups.movement.applyFixedType && (
                       <label className="form-field settings-wide">
-                        Operation
+                        {t('operation')}
                         <div className="operation-toggle">
-                          <button type="button" className={movementType === 'versement' ? 'active' : ''} onClick={() => setMovementType('versement')}>{activeAction.config.popups.movement.versementLabel}</button>
-                          <button type="button" className={movementType === 'retrait' ? 'active' : ''} onClick={() => setMovementType('retrait')}>{activeAction.config.popups.movement.retraitLabel}</button>
+                          <button type="button" className={movementType === 'versement' ? 'active' : ''} onClick={() => setMovementType('versement')}>{arText(activeAction.config.popups.movement.versementLabel)}</button>
+                          <button type="button" className={movementType === 'retrait' ? 'active' : ''} onClick={() => setMovementType('retrait')}>{arText(activeAction.config.popups.movement.retraitLabel)}</button>
                         </div>
                       </label>
                     )}
                     {!activeAction.config.popups.movement.applyFixedAccount && (
                       <label className="form-field">
-                        {activeAction.config.popups.movement.accountLabel}
+                        {arText(activeAction.config.popups.movement.accountLabel)}
                         <select value={targetAccountId} onChange={(event) => setTargetAccountId(event.target.value)}>
-                          <option value="">Selectionner</option>
+                          <option value="">{t('select')}</option>
                           {accounts.map((account) => (
-                            <option key={account.id} value={account.id}>{account.name}</option>
+                            <option key={account.id} value={account.id}>{arAccountName(account.name)}</option>
                           ))}
                         </select>
                       </label>
                     )}
                     <label className="form-field">
-                      {activeAction.config.popups.movement.amountLabel}
+                      {arText(activeAction.config.popups.movement.amountLabel)}
                       <input value={amount} disabled={activeAction.config.popups.movement.applyFixedAmount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} placeholder="0.00" />
                     </label>
                     {activeAction.config.popups.movement.showDescription && !activeAction.config.popups.movement.applyFixedDescription && (
                       <label className="form-field transfer-description">
-                        {activeAction.config.popups.movement.descriptionLabel}
-                        <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Note" />
+                        {arText(activeAction.config.popups.movement.descriptionLabel)}
+                        <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t('note')} />
                       </label>
                     )}
                     {activeAction.config.popups.movement.showContributors && (
                       <label className="form-field transfer-description contributor-picker-field">
-                        {activeAction.config.popups.movement.contributorsLabel}
+                        {arText(activeAction.config.popups.movement.contributorsLabel)}
                         <input
                           value={contributorName}
                           onBlur={() => window.setTimeout(() => setContributorPickerOpen(false), 120)}
@@ -815,7 +956,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
                             setContributorPickerOpen(true);
                           }}
                           onFocus={() => setContributorPickerOpen(true)}
-                          placeholder="Nom contributeur"
+                          placeholder={t('contributorName')}
                         />
                         {contributorPickerOpen && Boolean(filteredContributorNames.length) && (
                           <div className="contributor-picker-list">
@@ -834,25 +975,25 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
                 {activeAction.kind === 'transfer' && (
                   <div className="transfer-grid">
                     <label className="form-field">
-                      {activeAction.config.popups.transfer.fromLabel}
+                      {arText(activeAction.config.popups.transfer.fromLabel)}
                       <select value={sourceAccountId} disabled={activeAction.config.popups.transfer.applyFixedFromAccount} onChange={(event) => setSourceAccountId(event.target.value)}>
-                        <option value="">Selectionner</option>
+                        <option value="">{t('select')}</option>
                         {accounts.map((account) => (
-                          <option key={account.id} value={account.id}>{account.name}</option>
+                          <option key={account.id} value={account.id}>{arAccountName(account.name)}</option>
                         ))}
                       </select>
                     </label>
                     <label className="form-field">
-                      {activeAction.config.popups.transfer.toLabel}
+                      {arText(activeAction.config.popups.transfer.toLabel)}
                       <select value={targetAccountId} disabled={activeAction.config.popups.transfer.applyFixedToAccount} onChange={(event) => setTargetAccountId(event.target.value)}>
-                        <option value="">Selectionner</option>
+                        <option value="">{t('select')}</option>
                         {transferTargets.map((account) => (
-                          <option key={account.id} value={account.id}>{account.name}</option>
+                          <option key={account.id} value={account.id}>{arAccountName(account.name)}</option>
                         ))}
                       </select>
                     </label>
                     <label className="form-field">
-                      {activeAction.config.popups.transfer.amountLabel}
+                      {arText(activeAction.config.popups.transfer.amountLabel)}
                       <input value={amount} disabled={activeAction.config.popups.transfer.applyFixedAmount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} placeholder="0.00" />
                     </label>
                   </div>
@@ -861,32 +1002,32 @@ export function AccountsPage({ accounts, dashboard, currentUser, onRefresh, onNa
                 {activeAction.kind === 'unpaid' && (
                   <div className="transfer-grid">
                     <label className="form-field">
-                      Personne
-                      <input value={personName} onChange={(event) => setPersonName(event.target.value)} placeholder="Nom client" />
+                      {t('person')}
+                      <input value={personName} onChange={(event) => setPersonName(event.target.value)} placeholder={t('customerName')} />
                     </label>
                     <label className="form-field">
-                      Montant
+                      {t('amount')}
                       <input value={amount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} placeholder="0.00" />
                     </label>
                     <label className="form-field transfer-description">
-                      Description
-                      <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Note" />
+                      {t('note')}
+                      <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t('note')} />
                     </label>
                   </div>
                 )}
 
                 {activeAction.kind === 'transfer' && activeAction.config.popups.transfer.showDescription && (
                   <label className="form-field">
-                    {activeAction.config.popups.transfer.descriptionLabel}
-                    <input value={description} disabled={activeAction.config.popups.transfer.applyFixedDescription} onChange={(event) => setDescription(event.target.value)} placeholder="Note" />
+                    {arText(activeAction.config.popups.transfer.descriptionLabel)}
+                    <input value={description} disabled={activeAction.config.popups.transfer.applyFixedDescription} onChange={(event) => setDescription(event.target.value)} placeholder={t('note')} />
                   </label>
                 )}
 
                 {error && <div className="transfer-error">{error}</div>}
                 <div className="modal-actions">
-                  <button className="modal-cancel" disabled={saving} onClick={closePopup}>{activeAction.kind === 'transfer' ? activeAction.config.popups.transfer.cancelLabel : activeAction.config.popups.movement.cancelLabel}</button>
+                  <button className="modal-cancel" disabled={saving} onClick={closePopup}>{arText(activeAction.kind === 'transfer' ? activeAction.config.popups.transfer.cancelLabel : activeAction.config.popups.movement.cancelLabel)}</button>
                   <button className="transfer-submit" disabled={saving} onClick={submitAccountAction}>
-                    {saving ? 'Enregistrement...' : activeAction.kind === 'transfer' ? activeAction.config.popups.transfer.validateLabel : activeAction.config.popups.movement.validateLabel}
+                    {saving ? t('saveProgress') : arText(activeAction.kind === 'transfer' ? activeAction.config.popups.transfer.validateLabel : activeAction.config.popups.movement.validateLabel)}
                   </button>
                 </div>
               </div>
@@ -911,8 +1052,8 @@ function KpiCard({ icon: Icon, label, value }: { icon: LucideIcon; label: string
 }
 
 function modalTitle(kind: AccountActionSlot, popups?: AccountCardConfig['popups']) {
-  if (kind === 'versement') return popups?.movement.title ?? 'Versement au compte';
-  if (kind === 'transfer') return popups?.transfer.title ?? 'Transfert entre comptes';
-  if (kind === 'unpaid') return 'Ajouter non paye';
-  return 'Action compte';
+  if (kind === 'versement') return popups?.movement.title ?? 'إيداع في الحساب';
+  if (kind === 'transfer') return popups?.transfer.title ?? 'تحويل بين الحسابات';
+  if (kind === 'unpaid') return 'إضافة غير مدفوع';
+  return 'عملية الحساب';
 }

@@ -11,7 +11,7 @@ from app.config import settings
 from app.db import get_db
 from app.deps import current_user, require_admin
 from app.import_ai import DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_MODEL, manual_transform_transactions, spreadsheet_rows, transform_transactions, table_excerpt
-from app.models import Account, AccountTransfer, AgencyLedgerEntry, AgencyLink, AgencyLinkStatus, AgencyTransferRule, AgencyTransferRuleStatus, AuditArea, AuditLog, CashCount, Company, InterAgencyTransfer, InterAgencyTransferStatus, Service, ServiceFeeRule, ServiceTransaction, UnpaidItem, UnpaidMovement, User, UserRole
+from app.models import Account, AccountLedgerEntry, AccountTransfer, AgencyLedgerEntry, AgencyLink, AgencyLinkStatus, AgencyTransferRule, AgencyTransferRuleStatus, AuditArea, AuditLog, CashCount, Company, InterAgencySettlement, InterAgencyTransfer, InterAgencyTransferStatus, Service, ServiceFeeRule, ServiceTransaction, UnpaidItem, UnpaidMovement, User, UserRole
 from app.schemas import (
     AccountCreate,
     AccountBalanceUpdate,
@@ -34,6 +34,8 @@ from app.schemas import (
     RegisterIn,
     InterAgencyTransferCreate,
     InterAgencyTransferOut,
+    InterAgencySettlementCreate,
+    InterAgencySettlementOut,
     SalafEntryIn,
     ServiceCreate,
     ServiceOut,
@@ -50,7 +52,7 @@ from app.schemas import (
     UserOut,
 )
 from app.security import create_access_token, hash_password, verify_password
-from app.services import accept_inter_agency_transfer, apply_balance_delta, audit as write_audit, create_salaf, create_service_transaction, create_transfer, dashboard_summary, reverse_service_transaction, save_cash_count, update_service_transaction
+from app.services import accept_inter_agency_transfer, account_display_balance, apply_balance_delta, audit as write_audit, create_salaf, create_service_transaction, create_transfer, dashboard_summary, reset_account_opening_balance, reverse_service_transaction, save_cash_count, sync_account_balance, update_service_transaction
 
 app = FastAPI(title="RDET Web API")
 
@@ -73,6 +75,154 @@ def ensure_multi_agency_schema() -> None:
       db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT"))
       db.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions JSONB"))
       db.execute(text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS previous_balance NUMERIC(14,2)"))
+      db.execute(text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS debit_total NUMERIC(14,2) NOT NULL DEFAULT 0"))
+      db.execute(text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credit_total NUMERIC(14,2) NOT NULL DEFAULT 0"))
+      db.execute(text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS normal_balance_side TEXT NOT NULL DEFAULT 'debit'"))
+      db.execute(text("""
+          DO $$
+          BEGIN
+              ALTER TABLE accounts ADD CONSTRAINT accounts_normal_balance_side_check CHECK (normal_balance_side IN ('debit', 'credit')) NOT VALID;
+          EXCEPTION WHEN duplicate_object THEN NULL;
+          END $$;
+      """))
+      db.execute(text("""
+          UPDATE accounts
+          SET debit_total = CASE WHEN COALESCE(balance, 0) >= 0 THEN COALESCE(balance, 0) ELSE 0 END,
+              credit_total = CASE WHEN COALESCE(balance, 0) < 0 THEN ABS(COALESCE(balance, 0)) ELSE 0 END
+          WHERE COALESCE(debit_total, 0) = 0
+            AND COALESCE(credit_total, 0) = 0
+            AND COALESCE(balance, 0) <> 0
+      """))
+      db.execute(text("""
+          CREATE TABLE IF NOT EXISTS account_ledger_entries (
+              id BIGSERIAL PRIMARY KEY,
+              account_id BIGINT NOT NULL REFERENCES accounts(id),
+              account_transfer_id BIGINT REFERENCES account_transfers(id),
+              side TEXT NOT NULL CHECK (side IN ('debit', 'credit')),
+              amount NUMERIC(14,2) NOT NULL CHECK (amount >= 0),
+              balance_effect NUMERIC(14,2) NOT NULL,
+              balance_after NUMERIC(14,2) NOT NULL DEFAULT 0,
+              description TEXT,
+              occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              created_by BIGINT REFERENCES users(id)
+          )
+      """))
+      db.execute(text("CREATE INDEX IF NOT EXISTS idx_account_ledger_account ON account_ledger_entries(account_id, occurred_at DESC, id DESC)"))
+      db.execute(text("CREATE INDEX IF NOT EXISTS idx_account_ledger_transfer ON account_ledger_entries(account_transfer_id)"))
+      db.execute(text("""
+          INSERT INTO account_ledger_entries (
+              account_id,
+              account_transfer_id,
+              side,
+              amount,
+              balance_effect,
+              balance_after,
+              description,
+              occurred_at,
+              created_by
+          )
+          SELECT
+              entry.account_id,
+              entry.transfer_id,
+              CASE
+                  WHEN entry.normal_balance_side = 'credit' AND entry.balance_effect > 0 THEN 'credit'
+                  WHEN entry.normal_balance_side = 'credit' THEN 'debit'
+                  WHEN entry.balance_effect > 0 THEN 'debit'
+                  ELSE 'credit'
+              END,
+              ABS(entry.balance_effect),
+              entry.balance_effect,
+              0,
+              entry.description,
+              entry.occurred_at,
+              entry.created_by
+          FROM (
+              SELECT
+                  transfers.id AS transfer_id,
+                  transfers.from_account_id AS account_id,
+                  accounts.normal_balance_side,
+                  -transfers.amount AS balance_effect,
+                  transfers.description,
+                  transfers.occurred_at,
+                  transfers.created_by
+              FROM account_transfers transfers
+              JOIN accounts ON accounts.id = transfers.from_account_id
+              WHERE transfers.from_account_id IS NOT NULL
+              UNION ALL
+              SELECT
+                  transfers.id AS transfer_id,
+                  transfers.to_account_id AS account_id,
+                  accounts.normal_balance_side,
+                  transfers.amount AS balance_effect,
+                  transfers.description,
+                  transfers.occurred_at,
+                  transfers.created_by
+              FROM account_transfers transfers
+              JOIN accounts ON accounts.id = transfers.to_account_id
+              WHERE transfers.to_account_id IS NOT NULL
+          ) entry
+          WHERE NOT EXISTS (
+              SELECT 1
+              FROM account_ledger_entries existing
+              WHERE existing.account_transfer_id = entry.transfer_id
+                AND existing.account_id = entry.account_id
+                AND existing.balance_effect = entry.balance_effect
+              )
+      """))
+      db.execute(text("""
+          WITH source_rows AS (
+              SELECT
+                  ledger.id AS ledger_id,
+                  ledger.account_id,
+                  ledger.amount,
+                  accounts.normal_balance_side
+              FROM account_ledger_entries ledger
+              JOIN inter_agency_transfers transfers
+                ON transfers.account_transfer_id = ledger.account_transfer_id
+              JOIN accounts
+                ON accounts.id = ledger.account_id
+              WHERE transfers.status = 'accepted'
+                AND ledger.account_id = transfers.source_account_id
+                AND ledger.balance_effect < 0
+          ),
+          account_deltas AS (
+              SELECT
+                  account_id,
+                  normal_balance_side,
+                  SUM(amount) AS amount
+              FROM source_rows
+              GROUP BY account_id, normal_balance_side
+          )
+          UPDATE accounts
+          SET debit_total = CASE
+                  WHEN account_deltas.normal_balance_side = 'debit' THEN accounts.debit_total + account_deltas.amount
+                  ELSE GREATEST(accounts.debit_total - account_deltas.amount, 0)
+              END,
+              credit_total = CASE
+                  WHEN account_deltas.normal_balance_side = 'credit' THEN accounts.credit_total + account_deltas.amount
+                  ELSE GREATEST(accounts.credit_total - account_deltas.amount, 0)
+              END
+          FROM account_deltas
+          WHERE accounts.id = account_deltas.account_id
+      """))
+      db.execute(text("""
+          UPDATE account_ledger_entries ledger
+          SET side = CASE
+                  WHEN accounts.normal_balance_side = 'credit' THEN 'credit'
+                  ELSE 'debit'
+              END,
+              balance_effect = ledger.amount,
+              balance_after = CASE
+                  WHEN accounts.normal_balance_side = 'credit' THEN accounts.credit_total - accounts.debit_total
+                  ELSE accounts.debit_total - accounts.credit_total
+              END
+          FROM inter_agency_transfers transfers, accounts
+          WHERE transfers.account_transfer_id = ledger.account_transfer_id
+            AND accounts.id = ledger.account_id
+            AND transfers.status = 'accepted'
+            AND ledger.account_id = transfers.source_account_id
+            AND ledger.balance_effect < 0
+      """))
       db.execute(text("ALTER TABLE account_transfers ADD COLUMN IF NOT EXISTS contributions JSONB"))
       db.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS company_id BIGINT REFERENCES companies(id)"))
       db.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS image_url TEXT"))
@@ -202,6 +352,31 @@ def ensure_multi_agency_schema() -> None:
       db.execute(text("CREATE INDEX IF NOT EXISTS idx_agency_transfer_rules_agencies ON agency_transfer_rules(source_agency_id, destination_agency_id)"))
       db.execute(text("CREATE INDEX IF NOT EXISTS idx_inter_agency_transfers_status ON inter_agency_transfers(status)"))
       db.execute(text("CREATE INDEX IF NOT EXISTS idx_inter_agency_transfers_agencies ON inter_agency_transfers(source_agency_id, destination_agency_id)"))
+      db.execute(text("""
+          CREATE TABLE IF NOT EXISTS inter_agency_settlements (
+              id BIGSERIAL PRIMARY KEY,
+              inter_agency_transfer_id BIGINT NOT NULL REFERENCES inter_agency_transfers(id),
+              payer_agency_id BIGINT NOT NULL REFERENCES companies(id),
+              payer_account_id BIGINT NOT NULL REFERENCES accounts(id),
+              receiver_agency_id BIGINT NOT NULL REFERENCES companies(id),
+              receiver_account_id BIGINT NOT NULL REFERENCES accounts(id),
+              debt_account_id BIGINT NOT NULL REFERENCES accounts(id),
+              amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+              note TEXT,
+              status TEXT NOT NULL DEFAULT 'pending',
+              account_transfer_id BIGINT REFERENCES account_transfers(id),
+              created_by_user_id BIGINT REFERENCES users(id),
+              accepted_by_user_id BIGINT REFERENCES users(id),
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              accepted_at TIMESTAMPTZ
+          )
+      """))
+      db.execute(text("ALTER TABLE inter_agency_settlements ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'"))
+      db.execute(text("ALTER TABLE inter_agency_settlements ADD COLUMN IF NOT EXISTS accepted_by_user_id BIGINT REFERENCES users(id)"))
+      db.execute(text("ALTER TABLE inter_agency_settlements ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ"))
+      db.execute(text("UPDATE inter_agency_settlements SET status = 'accepted', accepted_at = created_at WHERE account_transfer_id IS NOT NULL AND status = 'pending'"))
+      db.execute(text("CREATE INDEX IF NOT EXISTS idx_inter_agency_settlements_transfer ON inter_agency_settlements(inter_agency_transfer_id)"))
+      db.execute(text("CREATE INDEX IF NOT EXISTS idx_inter_agency_settlements_agencies ON inter_agency_settlements(payer_agency_id, receiver_agency_id)"))
       db.execute(text("""
           INSERT INTO user_agencies (user_id, company_id, role)
           SELECT id, company_id, role FROM users
@@ -576,6 +751,8 @@ def rule_payload(rule: AgencyTransferRule) -> dict:
 
 
 def inter_agency_transfer_payload(item: InterAgencyTransfer) -> dict:
+    settled_amount = getattr(item, "_settled_amount", Decimal("0")) or Decimal("0")
+    remaining_amount = max(Decimal(item.amount) - Decimal(settled_amount), Decimal("0"))
     return {
         "id": item.id,
         "transfer_rule_id": item.transfer_rule_id,
@@ -595,7 +772,63 @@ def inter_agency_transfer_payload(item: InterAgencyTransfer) -> dict:
         "receiver_decision_by_user_id": item.receiver_decision_by_user_id,
         "created_at": item.created_at,
         "decided_at": item.decided_at,
+        "settled_amount": settled_amount,
+        "remaining_amount": remaining_amount,
     }
+
+
+def inter_agency_settlement_payload(item: InterAgencySettlement) -> dict:
+    return {
+        "id": item.id,
+        "inter_agency_transfer_id": item.inter_agency_transfer_id,
+        "payer_agency_id": item.payer_agency_id,
+        "payer_account_id": item.payer_account_id,
+        "payer_agency_name": item.payer_agency.name if item.payer_agency else None,
+        "payer_account_name": item.payer_account.name if item.payer_account else None,
+        "receiver_agency_id": item.receiver_agency_id,
+        "receiver_account_id": item.receiver_account_id,
+        "receiver_agency_name": item.receiver_agency.name if item.receiver_agency else None,
+        "receiver_account_name": item.receiver_account.name if item.receiver_account else None,
+        "debt_account_id": item.debt_account_id,
+        "debt_account_name": item.debt_account.name if item.debt_account else None,
+        "amount": item.amount,
+        "note": item.note,
+        "status": item.status,
+        "account_transfer_id": item.account_transfer_id,
+        "created_by_user_id": item.created_by_user_id,
+        "accepted_by_user_id": item.accepted_by_user_id,
+        "created_at": item.created_at,
+        "accepted_at": item.accepted_at,
+    }
+
+
+def attach_inter_agency_settlement_totals(db: Session, rows: list[InterAgencyTransfer]) -> None:
+    if not rows:
+        return
+    transfer_ids = [row.id for row in rows]
+    totals = dict(
+        db.execute(
+            select(
+                InterAgencySettlement.inter_agency_transfer_id,
+                func.coalesce(func.sum(InterAgencySettlement.amount), 0),
+            )
+            .where(InterAgencySettlement.inter_agency_transfer_id.in_(transfer_ids))
+            .where(InterAgencySettlement.status == "accepted")
+            .group_by(InterAgencySettlement.inter_agency_transfer_id)
+        ).all()
+    )
+    for row in rows:
+        row._settled_amount = Decimal(totals.get(row.id, 0) or 0)
+
+
+def inter_agency_settled_amount(db: Session, transfer_id: int) -> Decimal:
+    return Decimal(
+        db.scalar(
+            select(func.coalesce(func.sum(InterAgencySettlement.amount), 0))
+            .where(InterAgencySettlement.inter_agency_transfer_id == transfer_id)
+            .where(InterAgencySettlement.status == "accepted")
+        ) or 0
+    )
 
 
 @app.post("/agency-links", response_model=AgencyLinkOut)
@@ -799,6 +1032,7 @@ def list_inter_agency_transfers(
     if status:
         query = query.where(InterAgencyTransfer.status == status)
     rows = db.scalars(query.order_by(InterAgencyTransfer.created_at.desc(), InterAgencyTransfer.id.desc()).limit(300)).all()
+    attach_inter_agency_settlement_totals(db, rows)
     return [inter_agency_transfer_payload(row) for row in rows]
 
 
@@ -808,6 +1042,7 @@ def accept_inter_agency_transfer_endpoint(transfer_id: int, user: User = Depends
     if not item:
         raise HTTPException(status_code=404, detail="Transfer not found")
     accepted = accept_inter_agency_transfer(db, item, user)
+    attach_inter_agency_settlement_totals(db, [accepted])
     return inter_agency_transfer_payload(accepted)
 
 
@@ -825,7 +1060,137 @@ def cancel_inter_agency_transfer(transfer_id: int, user: User = Depends(current_
     write_audit(db, user, AuditArea.transaction, "transfer_cancelled", "Inter-agency transfer cancelled", transfer_id=item.id)
     db.commit()
     db.refresh(item)
+    attach_inter_agency_settlement_totals(db, [item])
     return inter_agency_transfer_payload(item)
+
+
+@app.get("/inter-agency-settlements", response_model=list[InterAgencySettlementOut])
+def list_inter_agency_settlements(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
+    agency_id = require_agency(user)
+    rows = db.scalars(
+        select(InterAgencySettlement)
+        .where(or_(InterAgencySettlement.payer_agency_id == agency_id, InterAgencySettlement.receiver_agency_id == agency_id))
+        .order_by(InterAgencySettlement.created_at.desc(), InterAgencySettlement.id.desc())
+        .limit(300)
+    ).all()
+    return [inter_agency_settlement_payload(row) for row in rows]
+
+
+@app.post("/inter-agency-settlements", response_model=InterAgencySettlementOut)
+def create_inter_agency_settlement(payload: InterAgencySettlementCreate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    require_permission(user, db, "accounts", "transfer")
+    agency_id = require_agency(user)
+    transfer = db.get(InterAgencyTransfer, payload.inter_agency_transfer_id)
+    if not transfer or agency_id not in {transfer.source_agency_id, transfer.destination_agency_id}:
+        raise HTTPException(status_code=404, detail="Inter-agency transfer not found")
+    if transfer.status != InterAgencyTransferStatus.accepted:
+        raise HTTPException(status_code=409, detail="Only accepted transfers can be settled")
+    if agency_id != transfer.destination_agency_id:
+        raise HTTPException(status_code=403, detail="Only the destination agency can return this transfer")
+
+    amount = Decimal(payload.amount)
+    payer_account = account_belongs_to_agency(db, payload.payer_account_id, transfer.destination_agency_id)
+    receiver_account = account_belongs_to_agency(db, payload.receiver_account_id, transfer.source_agency_id)
+    debt_account = account_belongs_to_agency(db, transfer.source_account_id, transfer.source_agency_id)
+    occurred_at = datetime.now(timezone.utc)
+    settlement = InterAgencySettlement(
+        inter_agency_transfer_id=transfer.id,
+        payer_agency_id=transfer.destination_agency_id,
+        payer_account_id=payer_account.id,
+        receiver_agency_id=transfer.source_agency_id,
+        receiver_account_id=receiver_account.id,
+        debt_account_id=debt_account.id,
+        amount=amount,
+        note=payload.note,
+        status="pending",
+        created_by_user_id=user.id,
+        created_at=occurred_at,
+    )
+    db.add(settlement)
+    write_audit(db, user, AuditArea.transaction, "settlement_requested", "Inter-agency return requested", transfer_id=transfer.id, settlement_amount=str(amount))
+    db.commit()
+    db.refresh(settlement)
+    return inter_agency_settlement_payload(settlement)
+
+
+@app.post("/inter-agency-settlements/{settlement_id}/accept", response_model=InterAgencySettlementOut)
+def accept_inter_agency_settlement(settlement_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    require_permission(user, db, "accounts", "transfer")
+    agency_id = require_agency(user)
+    settlement = db.get(InterAgencySettlement, settlement_id)
+    if not settlement or agency_id not in {settlement.payer_agency_id, settlement.receiver_agency_id}:
+        raise HTTPException(status_code=404, detail="Settlement request not found")
+    if settlement.receiver_agency_id != agency_id:
+        raise HTTPException(status_code=403, detail="Only the debt agency can accept this return")
+    if settlement.status != "pending":
+        raise HTTPException(status_code=409, detail="Settlement is not pending")
+
+    amount = Decimal(settlement.amount)
+    occurred_at = datetime.now(timezone.utc)
+    note = settlement.note or f"Return payment for inter-agency transfer #{settlement.inter_agency_transfer_id}"
+    payer_agency_name = db.scalar(select(Company.name).where(Company.id == settlement.payer_agency_id)) or "Payer agency"
+    receiver_agency_name = db.scalar(select(Company.name).where(Company.id == settlement.receiver_agency_id)) or "Receiver agency"
+    account_transfer = create_transfer(
+        db,
+        type("TransferPayload", (), {
+            "from_account_id": settlement.payer_account_id,
+            "to_account_id": settlement.receiver_account_id,
+            "amount": amount,
+            "description": note,
+            "occurred_at": occurred_at,
+            "contributions": [
+                {
+                    "account_id": settlement.payer_account_id,
+                    "agency_id": settlement.receiver_agency_id,
+                    "name": receiver_agency_name,
+                    "amount": str(amount),
+                    "direction": "retrait",
+                },
+                {
+                    "account_id": settlement.receiver_account_id,
+                    "agency_id": settlement.payer_agency_id,
+                    "name": payer_agency_name,
+                    "amount": str(amount),
+                    "direction": "versement",
+                },
+            ],
+        })(),
+        user,
+        commit=False,
+    )
+    debt_account = account_belongs_to_agency(db, settlement.debt_account_id, settlement.receiver_agency_id)
+    apply_balance_delta(
+        db,
+        debt_account,
+        -amount,
+        account_transfer_id=account_transfer.id,
+        description=f"Debt settlement for transfer #{settlement.inter_agency_transfer_id}",
+        occurred_at=occurred_at,
+        created_by=user.id,
+    )
+    settlement.status = "accepted"
+    settlement.account_transfer_id = account_transfer.id
+    settlement.accepted_by_user_id = user.id
+    settlement.accepted_at = occurred_at
+    write_audit(db, user, AuditArea.transaction, "settlement_accepted", "Inter-agency return accepted", settlement_id=settlement.id, amount=str(amount))
+    db.commit()
+    db.refresh(settlement)
+    return inter_agency_settlement_payload(settlement)
+
+
+def account_scoped_contributions(transfer: AccountTransfer, account_id: int) -> list[dict]:
+    contributions = [item for item in (transfer.contributions or []) if isinstance(item, dict)]
+    has_scoped_rows = any(item.get("account_id") is not None for item in contributions)
+    if not has_scoped_rows:
+        return contributions
+    scoped = []
+    for item in contributions:
+        try:
+            if int(item.get("account_id")) == account_id:
+                scoped.append(item)
+        except (TypeError, ValueError):
+            continue
+    return scoped
 
 
 def account_contribution_total(db: Session, account_id: int) -> Decimal:
@@ -839,7 +1204,7 @@ def account_contribution_total(db: Session, account_id: int) -> Decimal:
     total = Decimal("0")
     for row in rows:
         fallback_direction = "versement" if row.to_account_id == account_id else "retrait"
-        for contribution in row.contributions or []:
+        for contribution in account_scoped_contributions(row, account_id):
             try:
                 amount = Decimal(str(contribution.get("amount") or row.amount or 0))
             except Exception:
@@ -861,8 +1226,7 @@ def sync_unpaid_account(db: Session, company_id: int | None) -> Decimal:
     if not account or (company_id and company_id not in account.company_ids):
         return Decimal("0")
     total = account_contribution_total(db, account.id)
-    account.previous_balance = account.balance
-    account.balance = total
+    apply_balance_delta(db, account, total - account_display_balance(account), description="Sync non paye total")
     account.updated_at = datetime.now(timezone.utc)
     return total
 
@@ -887,7 +1251,7 @@ def record_unpaid_contributor(db: Session, user: User, person_name: str, directi
     account = unpaid_target_account(db, user.company_id)
     if not account:
         return
-    apply_balance_delta(db, account, amount if direction == "+" else -amount)
+    apply_balance_delta(db, account, amount if direction == "+" else -amount, description=description or ("Add non paye" if direction == "+" else "Retrieve non paye"), created_by=user.id)
     db.add(
         AccountTransfer(
             from_account_id=account.id if direction == "-" else None,
@@ -1174,6 +1538,8 @@ def list_accounts(user: User = Depends(current_user), db: Session = Depends(get_
     if user.company_id:
         query = query.where(Account.company_ids.any(user.company_id))
     accounts = list(db.scalars(query.order_by(Account.legacy_id.nullslast(), Account.name)))
+    for account in accounts:
+        sync_account_balance(account)
     if user.role == UserRole.admin:
         return accounts
     hidden_ids = hidden_account_ids(db, user)
@@ -1192,8 +1558,20 @@ def list_linked_agency_accounts(agency_id: int, user: User = Depends(current_use
 @app.post("/accounts", response_model=AccountOut)
 def create_account(payload: AccountCreate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> Account:
     require_permission(user, db, "accounts", "create")
-    account = Account(name=payload.name, balance=payload.balance, previous_balance=payload.balance, visible=payload.visible, company_ids=[user.company_id] if user.company_id else [])
+    account = Account(
+        name=payload.name,
+        balance=0,
+        previous_balance=0,
+        debit_total=0,
+        credit_total=0,
+        normal_balance_side=payload.normal_balance_side,
+        visible=payload.visible,
+        company_ids=[user.company_id] if user.company_id else [],
+    )
     db.add(account)
+    db.flush()
+    if Decimal(payload.balance) != 0:
+        apply_balance_delta(db, account, Decimal(payload.balance), description="Opening balance", created_by=user.id)
     db.commit()
     db.refresh(account)
     return account
@@ -1203,8 +1581,10 @@ def create_account(payload: AccountCreate, user: User = Depends(current_user), d
 def update_account_balance(account_id: int, payload: AccountBalanceUpdate, user: User = Depends(current_user), db: Session = Depends(get_db)) -> Account:
     require_permission(user, db, "accounts", "changeBalance")
     account = require_account_access(db.get(Account, account_id), user, db)
-    account.previous_balance = account.balance
-    account.balance = payload.balance
+    sync_account_balance(account)
+    if payload.normal_balance_side and payload.normal_balance_side != account.normal_balance_side:
+        reset_account_opening_balance(account, account.balance, payload.normal_balance_side)
+    apply_balance_delta(db, account, Decimal(payload.balance) - account_display_balance(account), description="Manual balance adjustment", created_by=user.id)
     account.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(account)
@@ -1229,48 +1609,63 @@ def account_contributions(account_id: int, user: User = Depends(current_user), d
         )
         .order_by(AccountTransfer.occurred_at.desc(), AccountTransfer.id.desc())
     ).all()
-    return [
-        {
+    result = []
+    for row in rows:
+        contributions = account_scoped_contributions(row, account_id)
+        if not contributions:
+            continue
+        result.append({
             "id": row.id,
             "account_id": account_id,
             "amount": row.amount,
             "direction": "versement" if row.to_account_id == account_id else "retrait",
             "description": row.description,
             "occurred_at": row.occurred_at,
-            "contributions": row.contributions or [],
-        }
-        for row in rows
-    ]
+            "contributions": contributions,
+        })
+    return result
 
 
 @app.get("/accounts/{account_id}/movements")
 def account_movements(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[dict]:
     account = require_account_access(db.get(Account, account_id), user, db)
+    sync_account_balance(account)
     rows = db.scalars(
-        select(AccountTransfer)
-        .where(or_(AccountTransfer.to_account_id == account_id, AccountTransfer.from_account_id == account_id))
-        .order_by(AccountTransfer.occurred_at.desc(), AccountTransfer.id.desc())
+        select(AccountLedgerEntry)
+        .where(AccountLedgerEntry.account_id == account_id)
+        .order_by(AccountLedgerEntry.occurred_at.desc(), AccountLedgerEntry.id.desc())
         .limit(250)
     ).all()
-    related_ids = {row.from_account_id for row in rows if row.from_account_id} | {row.to_account_id for row in rows if row.to_account_id}
+    transfer_ids = {row.account_transfer_id for row in rows if row.account_transfer_id}
+    transfers = db.scalars(select(AccountTransfer).where(AccountTransfer.id.in_(transfer_ids))).all() if transfer_ids else []
+    transfer_by_id = {item.id: item for item in transfers}
+    related_ids = {row.from_account_id for row in transfers if row.from_account_id} | {row.to_account_id for row in transfers if row.to_account_id}
     related_accounts = db.scalars(select(Account).where(Account.id.in_(related_ids))).all() if related_ids else []
     account_names = {item.id: item.name for item in related_accounts}
-    return [
-        {
+    result = []
+    for row in rows:
+        transfer = transfer_by_id.get(row.account_transfer_id) if row.account_transfer_id else None
+        debit_amount = row.amount if row.side == "debit" else Decimal("0")
+        credit_amount = row.amount if row.side == "credit" else Decimal("0")
+        result.append({
             "id": row.id,
             "account_id": account_id,
             "amount": row.amount,
-            "direction": "in" if row.to_account_id == account_id else "out",
+            "direction": "in" if Decimal(row.balance_effect) >= 0 else "out",
+            "debit": debit_amount,
+            "credit": credit_amount,
+            "balance_effect": row.balance_effect,
+            "balance_after": row.balance_after,
+            "side": row.side,
             "description": row.description,
             "occurred_at": row.occurred_at,
-            "from_account_id": row.from_account_id,
-            "to_account_id": row.to_account_id,
-            "from_account_name": account_names.get(row.from_account_id) if row.from_account_id else None,
-            "to_account_name": account_names.get(row.to_account_id) if row.to_account_id else None,
-            "contributions": row.contributions or [],
-        }
-        for row in rows
-    ]
+            "from_account_id": transfer.from_account_id if transfer else None,
+            "to_account_id": transfer.to_account_id if transfer else None,
+            "from_account_name": account_names.get(transfer.from_account_id) if transfer and transfer.from_account_id else None,
+            "to_account_name": account_names.get(transfer.to_account_id) if transfer and transfer.to_account_id else None,
+            "contributions": account_scoped_contributions(transfer, account_id) if transfer and transfer.contributions else [],
+        })
+    return result
 
 
 @app.get("/services", response_model=list[ServiceOut])

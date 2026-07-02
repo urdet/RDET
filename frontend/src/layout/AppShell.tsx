@@ -61,7 +61,7 @@ export function AppShell({
                 {agencies.map((agency) => <option key={agency.id} value={agency.id}>{agency.name}</option>)}
               </select>
             </label>
-            <button className="circle-action" title="Create agency" aria-label="Create agency" onClick={onAgencyCreate}>
+            <button className="circle-action" title={t.createAgency} aria-label={t.createAgency} onClick={onAgencyCreate}>
               <Plus className="h-4 w-4" />
             </button>
             <button className="circle-action" title={t.refresh} aria-label={t.refresh} onClick={onRefresh}>

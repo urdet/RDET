@@ -1,6 +1,8 @@
 import { ArrowLeftRight, ClipboardList, ExternalLink, EyeOff, Landmark, MoreVertical, Receipt, RotateCw, WalletCards } from 'lucide-react';
 import { useState } from 'react';
+import { tr } from '../../i18n';
 import { Account } from '../../types';
+import { arAccountName, arActionLabel } from '../../utils/arabic';
 import { money } from '../../utils/format';
 import { AccountActionSlot, AccountButtonWidget } from './accountCardConfig';
 
@@ -29,7 +31,7 @@ function ActionButton({ button, onAction }: { button: AccountButtonWidget; onAct
   if (action === 'hidden') return <span />;
   const Icon = actionIcons[action as keyof typeof actionIcons] ?? ExternalLink;
   return (
-    <button className="compte-action-button" title={button.label || action} aria-label={button.label || action} onClick={(event) => { event.stopPropagation(); onAction?.(action); }}>
+    <button className="compte-action-button" title={arActionLabel(button.label || action)} aria-label={arActionLabel(button.label || action)} onClick={(event) => { event.stopPropagation(); onAction?.(action); }}>
       <Icon className="h-4 w-4" />
     </button>
   );
@@ -46,8 +48,8 @@ export function CompteBox({ account, texts = [], buttons = [], showAction = true
           <div className="compte-menu-wrap">
             <button
               className="compte-menu-button"
-              title="Options"
-              aria-label="Options"
+              title={tr('options')}
+              aria-label={tr('options')}
               onClick={(event) => {
                 event.stopPropagation();
                 setMenuOpen((value) => !value);
@@ -65,13 +67,13 @@ export function CompteBox({ account, texts = [], buttons = [], showAction = true
                     onDetails();
                   }}
                 >
-                  Details
+                  {tr('details')}
                 </button>
               </div>
             )}
           </div>
         )}
-        <div className="compte-name">{account.name}</div>
+        <div className="compte-name">{arAccountName(account.name)}</div>
         <div className="compte-solde">{money(account.balance)}</div>
         {showAction && (
           <div className="compte-actions-row">

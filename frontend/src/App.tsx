@@ -16,9 +16,10 @@ import { UsersPage } from './features/users/UsersPage';
 import { ProfilePage } from './features/profile/ProfilePage';
 import { AccountWorkflowPage } from './features/workflows/AccountWorkflowPage';
 import { TransactionWorkflowPage } from './features/workflows/TransactionWorkflowPage';
-import { isLanguage, isThemeMode, Language, ThemeMode } from './i18n';
+import { isLanguage, isThemeMode, Language, ThemeMode, tr } from './i18n';
 import { AppShell } from './layout/AppShell';
 import { Account, Agency, CurrentUser, Dashboard, ScreenId, Service } from './types';
+import { installStaticUiTranslator, translateStaticUi } from './utils/domUiTranslations';
 
 export function App() {
   const [token, setToken] = useState(localStorage.getItem('rdet_token'));
@@ -28,7 +29,7 @@ export function App() {
   });
   const [language, setLanguage] = useState<Language>(() => {
     const saved = localStorage.getItem('agencyos_language');
-    return isLanguage(saved) ? saved : 'en';
+    return isLanguage(saved) ? saved : 'ar';
   });
   const [screen, setScreen] = useState<ScreenId>('accounts');
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -77,7 +78,10 @@ export function App() {
     localStorage.setItem('agencyos_language', language);
     document.documentElement.lang = language;
     document.documentElement.dir = language === 'ar' ? 'rtl' : 'ltr';
+    window.setTimeout(() => translateStaticUi(), 0);
   }, [language]);
+
+  useEffect(() => installStaticUiTranslator(), []);
 
   async function changeAgency(agencyId: number) {
     if (!agencyId) return;
@@ -86,14 +90,14 @@ export function App() {
   }
 
   async function addAgency() {
-    const name = window.prompt('Agency name');
+    const name = window.prompt(tr('agencyNamePrompt', language));
     if (!name?.trim()) return;
     try {
       await createAgency(name.trim());
       await refresh();
       setError('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to create agency.');
+      setError(err instanceof Error ? err.message : tr('createAccountFailed', language));
     }
   }
 
@@ -124,11 +128,11 @@ export function App() {
       onThemeChange={setTheme}
     >
       {screen === 'home' && <DashboardPage dashboard={dashboard} />}
-      {screen === 'accounts' && <AccountsPage accounts={accounts} dashboard={dashboard} currentUser={currentUser} onRefresh={refresh} onNavigate={setScreen} />}
+      {screen === 'accounts' && <AccountsPage accounts={accounts} dashboard={dashboard} currentUser={currentUser} language={language} onRefresh={refresh} onNavigate={setScreen} />}
       {screen === 'account-settings' && <AccountSettingsPage accounts={accounts} dashboard={dashboard} />}
       {screen === 'services' && <ServicesPage services={services} accounts={accounts} onSaved={refresh} />}
       {screen === 'transactions' && <TransactionsPage services={services} accounts={accounts} onSaved={refresh} />}
-      {screen === 'inter-agency-transfers' && <InterAgencyTransfersPage accounts={accounts} agencies={agencies} currentUser={currentUser} />}
+      {screen === 'inter-agency-transfers' && <InterAgencyTransfersPage accounts={accounts} agencies={agencies} currentUser={currentUser} language={language} />}
       {screen === 'expenses' && <ExpensesPage />}
       {screen === 'cash' && <CashPage accounts={accounts} onSaved={refresh} />}
       {screen === 'register' && <RegisterPage />}

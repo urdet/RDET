@@ -25,6 +25,9 @@ export type Account = {
   name: string;
   balance: string;
   previous_balance: string | null;
+  debit_total: string;
+  credit_total: string;
+  normal_balance_side: 'debit' | 'credit';
   visible: boolean;
   company_ids: number[];
   legacy_id: number | null;
@@ -93,10 +96,37 @@ export type InterAgencyTransfer = {
   receiver_decision_by_user_id: number | null;
   created_at: string;
   decided_at: string | null;
+  settled_amount: string;
+  remaining_amount: string;
+};
+
+export type InterAgencySettlement = {
+  id: number;
+  inter_agency_transfer_id: number;
+  payer_agency_id: number;
+  payer_account_id: number;
+  payer_agency_name: string | null;
+  payer_account_name: string | null;
+  receiver_agency_id: number;
+  receiver_account_id: number;
+  receiver_agency_name: string | null;
+  receiver_account_name: string | null;
+  debt_account_id: number;
+  debt_account_name: string | null;
+  amount: string;
+  note: string | null;
+  status: 'pending' | 'accepted' | 'rejected';
+  account_transfer_id: number | null;
+  created_by_user_id: number | null;
+  accepted_by_user_id: number | null;
+  created_at: string;
+  accepted_at: string | null;
 };
 
 export type Dashboard = {
   total_balance: string;
+  total_debit: string;
+  total_credit: string;
   service_in: string;
   service_out: string;
   fees: string;
@@ -205,6 +235,8 @@ export type AccountActionSettings = {
 };
 
 export type TransferContribution = {
+  account_id?: number;
+  agency_id?: number;
   name: string;
   amount: string;
   direction: 'versement' | 'retrait';
@@ -225,6 +257,11 @@ export type AccountMovementEntry = {
   account_id: number;
   amount: string;
   direction: 'in' | 'out';
+  side: 'debit' | 'credit';
+  debit: string;
+  credit: string;
+  balance_effect: string;
+  balance_after: string;
   description: string | null;
   occurred_at: string;
   from_account_id: number | null;

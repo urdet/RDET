@@ -92,6 +92,9 @@ class Account(Base):
     name: Mapped[str] = mapped_column(Text, unique=True)
     balance: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
     previous_balance: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    debit_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    credit_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    normal_balance_side: Mapped[str] = mapped_column(Text, default="debit")
     visible: Mapped[bool] = mapped_column(Boolean, default=True)
     company_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
     legacy_id: Mapped[int | None] = mapped_column(Integer, unique=True)
@@ -112,6 +115,23 @@ class AccountTransfer(Base):
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reversal_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class AccountLedgerEntry(Base):
+    __tablename__ = "account_ledger_entries"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    account_transfer_id: Mapped[int | None] = mapped_column(ForeignKey("account_transfers.id"))
+    side: Mapped[str] = mapped_column(Text)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    balance_effect: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    balance_after: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    description: Mapped[str | None] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    account: Mapped[Account] = relationship()
+    account_transfer: Mapped[AccountTransfer | None] = relationship()
 
 
 class AgencyLink(Base):
@@ -181,6 +201,33 @@ class InterAgencyTransfer(Base):
     destination_agency: Mapped[Company] = relationship(foreign_keys=[destination_agency_id])
     source_account: Mapped[Account] = relationship(foreign_keys=[source_account_id])
     destination_account: Mapped[Account] = relationship(foreign_keys=[destination_account_id])
+
+
+class InterAgencySettlement(Base):
+    __tablename__ = "inter_agency_settlements"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    inter_agency_transfer_id: Mapped[int] = mapped_column(ForeignKey("inter_agency_transfers.id"))
+    payer_agency_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
+    payer_account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    receiver_agency_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
+    receiver_account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    debt_account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    note: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, default="pending")
+    account_transfer_id: Mapped[int | None] = mapped_column(ForeignKey("account_transfers.id"))
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    accepted_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    inter_agency_transfer: Mapped[InterAgencyTransfer] = relationship()
+    payer_agency: Mapped[Company] = relationship(foreign_keys=[payer_agency_id])
+    receiver_agency: Mapped[Company] = relationship(foreign_keys=[receiver_agency_id])
+    payer_account: Mapped[Account] = relationship(foreign_keys=[payer_account_id])
+    receiver_account: Mapped[Account] = relationship(foreign_keys=[receiver_account_id])
+    debt_account: Mapped[Account] = relationship(foreign_keys=[debt_account_id])
+    account_transfer: Mapped[AccountTransfer | None] = relationship()
 
 
 class Service(Base):
