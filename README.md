@@ -44,6 +44,30 @@ See [docs/legacy-analysis.md](docs/legacy-analysis.md) for the form/module inven
    - API docs: http://localhost:8000/docs
    - PostgreSQL: `localhost:5433`, database `rdet`, user `rdet`, password `rdet_dev_password`
 
+## Access From Another PC On The Same Network
+
+1. Start the stack on the host PC:
+
+   ```bash
+   docker compose up --build
+   ```
+
+2. Find the host PC IPv4 address, then open the frontend from another PC:
+
+   ```text
+   http://HOST_PC_IP:5173
+   ```
+
+   Example:
+
+   ```text
+   http://192.168.1.25:5173
+   ```
+
+The frontend automatically calls the backend at `http://HOST_PC_IP:8000`. If another PC cannot connect, allow inbound traffic to ports `5173` and `8000` in the host PC firewall.
+
+To force a specific backend URL, set `VITE_API_URL` before starting Docker Compose.
+
 ## Default Login
 
 The seed data creates:

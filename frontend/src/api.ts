@@ -1,6 +1,13 @@
 import { Account, AccountContributionEntry, Agency, AgencyLink, AgencyTransferRule, CurrentUser, InterAgencySettlement, InterAgencyTransfer, InterAgencyTransferStatus, ManagedUser, UserPermissionMap, UserRole } from './types';
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+function defaultApiUrl() {
+  if (typeof window === 'undefined') {
+    return 'http://localhost:8000';
+  }
+  return `${window.location.protocol}//${window.location.hostname}:8000`;
+}
+
+export const API_URL = import.meta.env.VITE_API_URL?.trim() || defaultApiUrl();
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('rdet_token');
