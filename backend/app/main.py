@@ -375,6 +375,38 @@ def ensure_multi_agency_schema() -> None:
       db.execute(text("ALTER TABLE inter_agency_settlements ADD COLUMN IF NOT EXISTS accepted_by_user_id BIGINT REFERENCES users(id)"))
       db.execute(text("ALTER TABLE inter_agency_settlements ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ"))
       db.execute(text("UPDATE inter_agency_settlements SET status = 'accepted', accepted_at = created_at WHERE account_transfer_id IS NOT NULL AND status = 'pending'"))
+      db.execute(text("""
+          WITH corrected AS (
+              SELECT
+                  transfers.id AS transfer_id,
+                  jsonb_agg(
+                      CASE
+                          WHEN contribution.item->>'direction' = 'versement'
+                            AND contribution.item->>'account_id' ~ '^[0-9]+$'
+                            AND contribution.item->>'agency_id' ~ '^[0-9]+$'
+                            AND (contribution.item->>'account_id')::bigint = settlements.receiver_account_id
+                            AND (contribution.item->>'agency_id')::bigint = settlements.payer_agency_id
+                          THEN jsonb_set(contribution.item, '{direction}', '"retrait"', false)
+                          ELSE contribution.item
+                      END
+                      ORDER BY contribution.position
+                  ) AS contributions
+              FROM inter_agency_settlements settlements
+              JOIN account_transfers transfers
+                ON transfers.id = settlements.account_transfer_id
+              CROSS JOIN LATERAL jsonb_array_elements(transfers.contributions) WITH ORDINALITY AS contribution(item, position)
+              WHERE settlements.status = 'accepted'
+                AND settlements.receiver_account_id = settlements.debt_account_id
+                AND transfers.contributions IS NOT NULL
+                AND jsonb_typeof(transfers.contributions) = 'array'
+              GROUP BY transfers.id
+          )
+          UPDATE account_transfers transfers
+          SET contributions = corrected.contributions
+          FROM corrected
+          WHERE transfers.id = corrected.transfer_id
+            AND transfers.contributions IS DISTINCT FROM corrected.contributions
+      """))
       db.execute(text("CREATE INDEX IF NOT EXISTS idx_inter_agency_settlements_transfer ON inter_agency_settlements(inter_agency_transfer_id)"))
       db.execute(text("CREATE INDEX IF NOT EXISTS idx_inter_agency_settlements_agencies ON inter_agency_settlements(payer_agency_id, receiver_agency_id)"))
       db.execute(text("""
@@ -1130,6 +1162,7 @@ def accept_inter_agency_settlement(settlement_id: int, user: User = Depends(curr
     note = settlement.note or f"Return payment for inter-agency transfer #{settlement.inter_agency_transfer_id}"
     payer_agency_name = db.scalar(select(Company.name).where(Company.id == settlement.payer_agency_id)) or "Payer agency"
     receiver_agency_name = db.scalar(select(Company.name).where(Company.id == settlement.receiver_agency_id)) or "Receiver agency"
+    receiver_contribution_direction = "retrait" if settlement.receiver_account_id == settlement.debt_account_id else "versement"
     account_transfer = create_transfer(
         db,
         type("TransferPayload", (), {
@@ -1151,7 +1184,7 @@ def accept_inter_agency_settlement(settlement_id: int, user: User = Depends(curr
                     "agency_id": settlement.payer_agency_id,
                     "name": payer_agency_name,
                     "amount": str(amount),
-                    "direction": "versement",
+                    "direction": receiver_contribution_direction,
                 },
             ],
         })(),

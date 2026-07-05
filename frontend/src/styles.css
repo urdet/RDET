@@ -5340,8 +5340,8 @@ body,
 }
 
 html[dir='rtl'] .notion-shell {
-  direction: rtl;
-  grid-template-columns: minmax(0, 1fr) 272px !important;
+  direction: ltr;
+  grid-template-columns: minmax(0, 1fr) 220px !important;
   grid-template-areas: "workspace sidebar";
 }
 
@@ -5349,6 +5349,7 @@ html[dir='rtl'] .notion-sidebar {
   grid-area: sidebar !important;
   grid-column: 2 !important;
   grid-row: 1;
+  direction: rtl;
   border-right: 0;
   border-left: 1px solid var(--line);
 }
@@ -5357,6 +5358,7 @@ html[dir='rtl'] .notion-workspace {
   grid-area: workspace !important;
   grid-column: 1 !important;
   grid-row: 1;
+  direction: rtl;
 }
 
 @media (max-width: 1100px) {

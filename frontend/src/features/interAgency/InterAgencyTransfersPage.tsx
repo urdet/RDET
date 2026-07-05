@@ -30,6 +30,14 @@ type Props = {
   language: Language;
 };
 
+type ReturnDebtOption = {
+  accountId: number;
+  accountName: string;
+  transfer: InterAgencyTransfer;
+  transferIds: number[];
+  totalRemaining: number;
+};
+
 export function InterAgencyTransfersPage({ accounts, agencies, currentUser, language }: Props) {
   const [links, setLinks] = useState<AgencyLink[]>([]);
   const [rules, setRules] = useState<AgencyTransferRule[]>([]);
@@ -62,15 +70,29 @@ export function InterAgencyTransfersPage({ accounts, agencies, currentUser, lang
   const localAccounts = accounts.filter((account) => activeAgencyId && account.company_ids.includes(activeAgencyId));
   const otherAgencies = agencies.filter((agency) => agency.id !== activeAgencyId);
   const returnableTransfers = transfers.filter((item) => item.status === 'accepted' && item.destination_agency_id === activeAgencyId);
-  const selectedReturnTransfer = returnableTransfers.find((item) => String(item.id) === returnTransferId) ?? returnableTransfers[0] ?? null;
-  const settlementTotals = useMemo(() => {
-    return settlements.reduce((totals, item) => {
-      const amount = Number(item.amount || 0);
-      if (item.status === 'accepted') totals.accepted += amount;
-      if (item.status === 'pending') totals.pending += amount;
-      return totals;
-    }, { accepted: 0, pending: 0 });
-  }, [settlements]);
+  const returnDebtOptions = useMemo(() => {
+    const options = new Map<number, ReturnDebtOption>();
+    returnableTransfers.forEach((transfer) => {
+      const accountId = transfer.source_account_id;
+      const current = options.get(accountId);
+      const remaining = Number(transfer.remaining_amount ?? transfer.amount ?? 0);
+      if (current) {
+        current.transferIds.push(transfer.id);
+        current.totalRemaining += Number.isFinite(remaining) ? remaining : 0;
+        return;
+      }
+      options.set(accountId, {
+        accountId,
+        accountName: transfer.source_account_name ?? t('account'),
+        transfer,
+        transferIds: [transfer.id],
+        totalRemaining: Number.isFinite(remaining) ? remaining : 0,
+      });
+    });
+    return Array.from(options.values()).sort((left, right) => left.accountName.localeCompare(right.accountName));
+  }, [returnableTransfers, language]);
+  const selectedReturnDebt = returnDebtOptions.find((item) => item.transferIds.includes(Number(returnTransferId))) ?? returnDebtOptions[0] ?? null;
+  const selectedReturnTransfer = selectedReturnDebt?.transfer ?? null;
   const linkChoices = useMemo(() => activeLinks.map((link) => ({
     id: link.id,
     label: link.agency_a_id === activeAgencyId ? link.agency_b_name : link.agency_a_name,
@@ -259,16 +281,12 @@ export function InterAgencyTransfersPage({ accounts, agencies, currentUser, lang
       {error && <div className="transfer-error">{error}</div>}
 
       <Panel title={t('requestReturn')} icon={Send}>
-        <div className="settlement-simple-summary">
-          <span>{t('returnAccepted')}: <b>{money(settlementTotals.accepted)}</b></span>
-          <span>{t('returnPending')}: <b>{money(settlementTotals.pending)}</b></span>
-        </div>
         <div className="rule-form settlement-form">
           <select value={returnTransferId} onChange={(event) => setReturnTransferId(event.target.value)}>
             <option value="">{t('debtOriginalAccount')}</option>
-            {returnableTransfers.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.source_account_name} - {t('amount')} {money(item.amount)} - {t('returnAccepted')} {money(item.settled_amount ?? 0)}
+            {returnDebtOptions.map((item) => (
+              <option key={item.accountId} value={item.transfer.id}>
+                {item.accountName} - {t('remainingAmount')}: {money(item.totalRemaining)}
               </option>
             ))}
           </select>
@@ -282,14 +300,14 @@ export function InterAgencyTransfersPage({ accounts, agencies, currentUser, lang
           </select>
           <input value={returnAmount} onChange={(event) => setReturnAmount(event.target.value)} placeholder={t('amount')} />
           <input value={returnNote} onChange={(event) => setReturnNote(event.target.value)} placeholder={t('note')} />
-          <button disabled={saving || !returnableTransfers.length} onClick={submitSettlement}>{t('requestReturn')}</button>
+          <button disabled={saving || !returnDebtOptions.length} onClick={submitSettlement}>{t('requestReturn')}</button>
         </div>
-        {selectedReturnTransfer && (
-          <div className="settlement-hint">
-            {t('pendingAgency')}: {selectedReturnTransfer.source_agency_name}. {t('debtAccount')}: {selectedReturnTransfer.source_account_name}
+        {selectedReturnDebt && (
+          <div className="settlement-simple-summary">
+            <span>{t('remainingAmount')}: <b>{money(selectedReturnDebt.totalRemaining)}</b></span>
           </div>
         )}
-        {!returnableTransfers.length && <div className="empty-service-state">{t('noAcceptedDebt')}</div>}
+        {!returnDebtOptions.length && <div className="empty-service-state">{t('noAcceptedDebt')}</div>}
       </Panel>
 
       <DataTable

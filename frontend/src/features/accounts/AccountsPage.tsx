@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import { ArrowDownToLine, ArrowRightLeft, Banknote, ChevronDown, History, Landmark, Minus, Plus, RefreshCw, Save, Search, Send, Settings2, TrendingDown, TrendingUp, X, type LucideIcon } from 'lucide-react';
-import { acceptInterAgencyTransfer, api, cancelInterAgencyTransfer, createAccount, createInterAgencySettlement, createInterAgencyTransfer, getAccountContributions, getAccountsScreenSettings, getAppSettings, listAgencyAccounts, listAgencyTransferRules, listInterAgencySettlements, listInterAgencyTransfers, saveAccountsScreenSettings, updateAccountBalance } from '../../api';
+import { acceptInterAgencySettlement, acceptInterAgencyTransfer, api, cancelInterAgencyTransfer, createAccount, createInterAgencySettlement, createInterAgencyTransfer, getAccountContributions, getAccountsScreenSettings, getAppSettings, listAgencyAccounts, listAgencyTransferRules, listInterAgencySettlements, listInterAgencyTransfers, saveAccountsScreenSettings, updateAccountBalance } from '../../api';
 import { Language, tr } from '../../i18n';
 import { can } from '../../permissions';
 import { CircleButton } from '../../shared/ui/CircleButton';
@@ -30,6 +30,14 @@ type ContributorCard = {
   name: string;
   total: number;
   entries: Array<AccountContributionEntry & { contribution: TransferContribution; signedAmount: number }>;
+};
+
+type ReturnDebtOption = {
+  accountId: number;
+  accountName: string;
+  transfer: InterAgencyTransfer;
+  transferIds: number[];
+  totalRemaining: number;
 };
 
 const accountOrderStorageKey = 'rdet_accounts_order';
@@ -118,15 +126,30 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
   const canUseMovement = can(currentUser, appSettings, 'accounts', 'movement');
   const activeInterAgencyRules = interAgencyRules.filter((rule) => rule.status === 'active' && rule.active && rule.source_agency_id === currentUser?.company_id);
   const returnableTransfers = acceptedTransfers.filter((item) => item.status === 'accepted' && item.destination_agency_id === currentUser?.company_id);
-  const selectedReturnTransfer = returnableTransfers.find((item) => String(item.id) === returnTransferId) ?? returnableTransfers[0] ?? null;
-  const settlementTotals = useMemo(() => {
-    return settlements.reduce((totals, item) => {
-      const amountValue = Number(item.amount || 0);
-      if (item.status === 'accepted') totals.accepted += amountValue;
-      if (item.status === 'pending') totals.pending += amountValue;
-      return totals;
-    }, { accepted: 0, pending: 0 });
-  }, [settlements]);
+  const pendingReturnSettlements = settlements.filter((item) => item.status === 'pending' && item.receiver_agency_id === currentUser?.company_id);
+  const returnDebtOptions = useMemo(() => {
+    const options = new Map<number, ReturnDebtOption>();
+    returnableTransfers.forEach((transfer) => {
+      const accountId = transfer.source_account_id;
+      const current = options.get(accountId);
+      const remaining = Number(transfer.remaining_amount ?? transfer.amount ?? 0);
+      if (current) {
+        current.transferIds.push(transfer.id);
+        current.totalRemaining += Number.isFinite(remaining) ? remaining : 0;
+        return;
+      }
+      options.set(accountId, {
+        accountId,
+        accountName: transfer.source_account_name ?? t('account'),
+        transfer,
+        transferIds: [transfer.id],
+        totalRemaining: Number.isFinite(remaining) ? remaining : 0,
+      });
+    });
+    return Array.from(options.values()).sort((left, right) => left.accountName.localeCompare(right.accountName));
+  }, [returnableTransfers, language]);
+  const selectedReturnDebt = returnDebtOptions.find((item) => item.transferIds.includes(Number(returnTransferId))) ?? returnDebtOptions[0] ?? null;
+  const selectedReturnTransfer = selectedReturnDebt?.transfer ?? null;
 
   const contributorCards = useMemo(() => {
     const cards = new Map<string, ContributorCard>();
@@ -493,6 +516,20 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
     }
   }
 
+  async function acceptPendingReturn(settlementId: number) {
+    setSaving(true);
+    setError('');
+    try {
+      await acceptInterAgencySettlement(settlementId);
+      await refreshInterAgency();
+      await onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('decisionFailed'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function submitNewAccount() {
     if (!newAccountName.trim()) {
       setError('Saisir le nom du compte.');
@@ -582,6 +619,33 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
                 <div className="incoming-transfer-actions">
                   <button disabled={saving} onClick={() => decideIncomingTransfer(item.id, 'accept')}>{t('accept')}</button>
                   <button disabled={saving} onClick={() => decideIncomingTransfer(item.id, 'cancel')}>{t('reject')}</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {pendingReturnSettlements.length > 0 && (
+        <section className="incoming-transfer-strip">
+          <div className="config-section-header">
+            <div>
+              <h3>{t('pendingReturnRequests')}</h3>
+            </div>
+            <CircleButton title={t('history')} icon={History} onClick={() => onNavigate('inter-agency-transfers')} />
+          </div>
+          <div className="incoming-transfer-grid">
+            {pendingReturnSettlements.map((item) => (
+              <article className="incoming-transfer-card" key={item.id}>
+                <div>
+                  <strong>{item.payer_agency_name ?? t('interAgencyReturn')}</strong>
+                  <span>{arAccountName(item.payer_account_name ?? t('account'))} → {arAccountName(item.receiver_account_name ?? t('account'))}</span>
+                  <small>{t('debtAccount')}: {arAccountName(item.debt_account_name ?? t('account'))}</small>
+                  {item.note && <small>{item.note}</small>}
+                </div>
+                <b>{money(item.amount)}</b>
+                <div className="incoming-transfer-actions">
+                  <button disabled={saving} onClick={() => acceptPendingReturn(item.id)}>{t('accept')}</button>
                 </div>
               </article>
             ))}
@@ -844,9 +908,9 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
                       {t('debtOriginalAccount')}
                       <select value={returnTransferId} onChange={(event) => setReturnTransferId(event.target.value)}>
                         <option value="">{t('selectDebt')}</option>
-                        {returnableTransfers.map((item) => (
-                          <option key={item.id} value={item.id}>
-                            {arAccountName(item.source_account_name)} - {t('amount')} {money(item.amount)} - {t('returnAccepted')} {money(item.settled_amount ?? 0)}
+                        {returnDebtOptions.map((item) => (
+                          <option key={item.accountId} value={item.transfer.id}>
+                            {arAccountName(item.accountName)} - {t('remainingAmount')}: {money(item.totalRemaining)}
                           </option>
                         ))}
                       </select>
@@ -865,10 +929,11 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
                         {returnReceiverAccounts.map((account) => <option key={account.id} value={account.id}>{arAccountName(account.name)}</option>)}
                       </select>
                     </label>
-                    <div className="settlement-simple-summary">
-                      <span>{t('returnAccepted')}: <b>{money(settlementTotals.accepted)}</b></span>
-                      <span>{t('returnPending')}: <b>{money(settlementTotals.pending)}</b></span>
-                    </div>
+                    {selectedReturnDebt && (
+                      <div className="settlement-simple-summary">
+                        <span>{t('remainingAmount')}: <b>{money(selectedReturnDebt.totalRemaining)}</b></span>
+                      </div>
+                    )}
                   </>
                 )}
                 <label className="form-field">
@@ -880,13 +945,13 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
                   <input value={interAgencyNote} onChange={(event) => setInterAgencyNote(event.target.value)} placeholder={t('note')} />
                 </label>
                 {interAgencyMode === 'send' && !activeInterAgencyRules.length && <div className="empty-service-state">{t('noAcceptedRule')}</div>}
-                {interAgencyMode === 'return' && !returnableTransfers.length && <div className="empty-service-state">{t('noAcceptedDebt')}</div>}
+                {interAgencyMode === 'return' && !returnDebtOptions.length && <div className="empty-service-state">{t('noAcceptedDebt')}</div>}
                 {error && <div className="transfer-error">{error}</div>}
                 <div className="modal-actions">
                   <button className="modal-cancel" disabled={saving} onClick={() => setInterAgencyOpen(false)}>{t('cancel')}</button>
                   <button
                     className="transfer-submit"
-                    disabled={saving || (interAgencyMode === 'send' ? !activeInterAgencyRules.length : !returnableTransfers.length)}
+                    disabled={saving || (interAgencyMode === 'send' ? !activeInterAgencyRules.length : !returnDebtOptions.length)}
                     onClick={interAgencyMode === 'send' ? submitInterAgencyTransfer : submitInterAgencyReturn}
                   >
                     {saving ? t('saveProgress') : interAgencyMode === 'send' ? t('interAgencySend') : t('requestReturn')}
