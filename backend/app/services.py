@@ -379,25 +379,15 @@ def service_supports_direction(service: Service, direction: Direction) -> bool:
     return direction.value in service_type
 
 
-def matching_service_transaction(db: Session, payload, user: User, amount: Decimal) -> ServiceTransaction | None:
-    occurred_at = payload.occurred_at
-    description = (payload.description or "").strip()
+def existing_service_transaction_by_solde(db: Session, user: User, solde: Decimal | None) -> ServiceTransaction | None:
+    if solde is None:
+        return None
     query = select(ServiceTransaction).where(
-        ServiceTransaction.service_id == payload.service_id,
-        ServiceTransaction.direction == payload.direction,
-        ServiceTransaction.amount == amount,
+        ServiceTransaction.solde == solde,
         ServiceTransaction.reversed_at.is_(None),
     )
     if user.company_id:
         query = query.join(User, User.id == ServiceTransaction.created_by).where(User.company_id == user.company_id)
-    if occurred_at:
-        query = query.where(func.date(ServiceTransaction.occurred_at) == occurred_at.date())
-        if description:
-            query = query.where(func.lower(func.coalesce(ServiceTransaction.description, "")) == description.lower())
-    elif description:
-        query = query.where(func.lower(func.coalesce(ServiceTransaction.description, "")) == description.lower())
-    else:
-        return None
     return db.scalar(query.order_by(ServiceTransaction.id.desc()).limit(1))
 
 
@@ -485,10 +475,10 @@ def create_service_transaction(db: Session, payload, user: User) -> ServiceTrans
     if not service_supports_direction(service, payload.direction):
         raise HTTPException(status_code=400, detail=f"{service.name} does not support {payload.direction.value}")
     amount = Decimal(payload.amount)
-    duplicate = matching_service_transaction(db, payload, user, amount)
-    if duplicate:
-        basis = "same date and description" if payload.occurred_at and payload.description else "same description" if payload.description else "same date"
-        raise HTTPException(status_code=409, detail=f"Duplicate transaction detected ({basis}). Existing ID: {duplicate.id}")
+    solde = Decimal(payload.solde) if getattr(payload, "solde", None) is not None else None
+    existing = existing_service_transaction_by_solde(db, user, solde)
+    if existing:
+        raise HTTPException(status_code=409, detail="Duplicate solde")
     fee = payload_fee(db, service, payload.direction, amount, payload)
     record_service_transfer_delta(db, user, service, payload.direction, transaction_effect_amount(amount, fee), payload.occurred_at, f"{service.name} {payload.direction.value}")
     tx = ServiceTransaction(
@@ -496,6 +486,7 @@ def create_service_transaction(db: Session, payload, user: User) -> ServiceTrans
         direction=payload.direction,
         amount=amount,
         fee=fee,
+        solde=solde,
         description=payload.description,
         occurred_at=payload.occurred_at or datetime.now(timezone.utc),
         created_by=user.id,

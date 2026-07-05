@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.deps import current_user, require_admin
-from app.import_ai import DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_MODEL, manual_transform_transactions, spreadsheet_rows, transform_transactions, table_excerpt
+from app.import_ai import DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_MODEL, fill_solde_from_source_rows, manual_transform_transactions, spreadsheet_rows, transform_transactions, table_excerpt
 from app.models import Account, AccountLedgerEntry, AccountTransfer, AgencyLedgerEntry, AgencyLink, AgencyLinkStatus, AgencyTransferRule, AgencyTransferRuleStatus, AuditArea, AuditLog, CashCount, Company, InterAgencySettlement, InterAgencyTransfer, InterAgencyTransferStatus, Service, ServiceFeeRule, ServiceTransaction, UnpaidItem, UnpaidMovement, User, UserRole
 from app.schemas import (
     AccountCreate,
@@ -228,6 +228,8 @@ def ensure_multi_agency_schema() -> None:
       db.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS routing_config JSONB"))
       db.execute(text("ALTER TABLE services ALTER COLUMN primary_account_id DROP NOT NULL"))
       db.execute(text("ALTER TABLE services ALTER COLUMN secondary_account_id DROP NOT NULL"))
+      db.execute(text("ALTER TABLE service_transactions ADD COLUMN IF NOT EXISTS solde NUMERIC(14,2)"))
+      db.execute(text("CREATE INDEX IF NOT EXISTS idx_service_transactions_solde ON service_transactions(solde) WHERE solde IS NOT NULL"))
       db.execute(text("""
           CREATE TABLE IF NOT EXISTS unpaid_movements (
               id BIGSERIAL PRIMARY KEY,
@@ -1844,6 +1846,7 @@ def service_transaction_payload(tx: ServiceTransaction) -> dict:
         "direction": tx.direction.value,
         "amount": tx.amount,
         "fee": tx.fee,
+        "solde": tx.solde,
         "description": tx.description,
         "occurred_at": tx.occurred_at,
     }
@@ -1869,19 +1872,19 @@ def list_service_transactions(
     service = db.get(Service, service_id)
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
-    day = occurred_on or date.today()
     query = (
         select(ServiceTransaction)
         .join(User, User.id == ServiceTransaction.created_by)
         .where(
             ServiceTransaction.service_id == service_id,
-            func.date(ServiceTransaction.occurred_at) == day,
             ServiceTransaction.reversed_at.is_(None),
         )
     )
+    if occurred_on:
+        query = query.where(func.date(ServiceTransaction.occurred_at) == occurred_on)
     if user.company_id:
         query = query.where(User.company_id == user.company_id)
-    rows = db.scalars(query.order_by(ServiceTransaction.id)).all()
+    rows = db.scalars(query.order_by(ServiceTransaction.occurred_at.desc(), ServiceTransaction.id.desc())).all()
     return [service_transaction_payload(row) for row in rows]
 
 
@@ -1939,6 +1942,7 @@ async def import_service_transactions(
             ],
             allowed_directions,
         )
+        fill_solde_from_source_rows(rows, transformed_rows)
         for row in transformed_rows:
             row["service_id"] = service_ids.get(row.get("service"))
         return {"rows": transformed_rows, "raw_rows": len(rows), "mode": "manual"}
@@ -1960,6 +1964,7 @@ async def import_service_transactions(
         model,
         service_types,
     )
+    fill_solde_from_source_rows(rows, transformed_rows)
     for row in transformed_rows:
         row["service_id"] = service_ids.get(row.get("service"))
     return {"rows": transformed_rows, "raw_rows": len(rows), "mode": "ai"}

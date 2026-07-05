@@ -265,6 +265,7 @@ class ServiceTransaction(Base):
     direction: Mapped[Direction] = mapped_column(SqlEnum(Direction, name="transaction_direction", values_callable=lambda x: [e.value for e in x]))
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
     fee: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    solde: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     description: Mapped[str | None] = mapped_column(Text)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))

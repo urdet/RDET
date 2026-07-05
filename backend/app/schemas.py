@@ -287,6 +287,7 @@ class ServiceTransactionCreate(BaseModel):
     direction: Direction
     amount: Decimal = Field(gt=0)
     fee: Decimal | None = Field(default=None, ge=0)
+    solde: Decimal | None = None
     description: str | None = None
     occurred_at: datetime | None = None
 

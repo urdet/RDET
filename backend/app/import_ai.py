@@ -105,7 +105,7 @@ def spreadsheet_rows(filename: str, content: bytes) -> list[list[str]]:
     raise HTTPException(status_code=400, detail="Import supports .xlsx, .xls or .csv files")
 
 
-def table_excerpt(rows: list[list[str]], max_rows: int = 80, max_cols: int = 14) -> str:
+def table_excerpt(rows: list[list[str]], max_rows: int = 80, max_cols: int = 40) -> str:
     excerpt = rows[:max_rows]
     lines = []
     for index, row in enumerate(excerpt, start=1):
@@ -195,7 +195,7 @@ def import_system_prompt(prompt: str | None) -> str:
         "Use kind=service only when it matches an available service. Use kind=charge for agency expenses/charges paid out. "
         "Use kind=unknown for operations whose service is not in the available services and is not a charge. "
         "Return only valid JSON matching the schema. Amount and fee must be positive decimal strings. "
-        "If the row has a balance after operation, return it as solde; solde may be zero or negative. If absent, use empty string. "
+        "Extract the Solde/balance-after-operation column as solde whenever it exists; solde may be zero or negative. If absent, use empty string. "
         "The JSON root must be an object with a rows array, not a bare array. "
         "If a row has a date or time, return occurred_at as ISO 8601. If not, use null. "
         "Set source_row_number to the 1-based spreadsheet row number shown before the row. "
@@ -345,14 +345,31 @@ def normalize_header(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+def solde_header_matches(value: Any) -> bool:
+    header = normalize_header(value)
+    if not header:
+        return False
+    solde_headers = {"solde", "balance", "bal", "new balance", "running balance", "closing balance", "balance after", "solde apres", "solde apres operation"}
+    return header in solde_headers or "solde" in header.split()
+
+
+def rightmost_non_empty_cell(row: list[str]) -> str:
+    for cell in reversed(row):
+        value = clean_cell(cell)
+        if value:
+            return value
+    return ""
+
+
 def manual_header_map(rows: list[list[str]]) -> tuple[int, dict[str, int]]:
+    solde_headers = {"solde", "balance", "bal", "new balance", "running balance", "closing balance", "balance after", "solde apres", "solde apres operation"}
     candidates: dict[str, tuple[set[str], set[str]]] = {
         "description": ({"description", "desc", "libelle", "motif", "operation", "details", "detail", "designation", "narration", "reference"}, set()),
         "amount": ({"amount", "montant", "somme", "total", "transaction amount"}, set()),
         "credit": ({"credit", "credite", "versement", "entree", "in", "cash in"}, set()),
         "debit": ({"debit", "debite", "retrait", "sortie", "out", "cash out"}, set()),
         "fee": ({"fee", "fees", "frais", "commission", "charge"}, set()),
-        "solde": ({"solde", "balance", "bal", "new balance"}, set()),
+        "solde": (solde_headers, set()),
         "date": ({"date", "datetime", "time", "heure", "created at", "operation date"}, set()),
     }
     best_row = 0
@@ -375,6 +392,80 @@ def manual_header_map(rows: list[list[str]]) -> tuple[int, dict[str, int]]:
             best_map = found
             best_score = score
     return (best_row, best_map) if best_score >= 2 else (-1, {})
+
+
+def solde_column_position(rows: list[list[str]]) -> tuple[int, int | None]:
+    header_row, headers = manual_header_map(rows)
+    if "solde" in headers:
+        return solde_data_column_index(rows, headers["solde"], header_row), header_row
+    for row_index, row in enumerate(rows):
+        matches = [
+            col_index
+            for col_index, cell in enumerate(row)
+            if solde_header_matches(cell)
+        ]
+        if matches:
+            header_index = matches[-1]
+            return solde_data_column_index(rows, header_index, row_index), row_index
+    max_col = max(
+        (
+            col_index
+            for row in rows
+            for col_index, cell in enumerate(row)
+            if clean_cell(cell)
+        ),
+        default=-1,
+    )
+    return (max_col, None) if max_col >= 0 else (-1, None)
+
+
+def solde_data_column_index(rows: list[list[str]], header_index: int, header_row: int | None) -> int:
+    start = (header_row + 1) if header_row is not None else 0
+    data_rows = rows[start:]
+    candidates = range(header_index, max(header_index - 5, -1), -1)
+    scored = [
+        (
+            sum(1 for row in data_rows if col_index < len(row) and normalize_balance(row[col_index])),
+            col_index,
+        )
+        for col_index in candidates
+    ]
+    best_count, best_index = max(scored, key=lambda item: (item[0], item[1]))
+    return best_index if best_count else header_index
+
+
+def row_solde_values(rows: list[list[str]], solde_index: int, header_row: int | None) -> list[str]:
+    start = (header_row + 1) if header_row is not None else 0
+    values = []
+    for row in rows[start:]:
+        if solde_index >= len(row):
+            continue
+        solde = normalize_balance(row[solde_index])
+        if solde:
+            values.append(solde)
+    return values
+
+
+def fill_solde_from_source_rows(rows: list[list[str]], transformed_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    solde_index, header_row = solde_column_position(rows)
+    if solde_index < 0:
+        return transformed_rows
+    solde_values = row_solde_values(rows, solde_index, header_row)
+    solde_value_index = 0
+    for row in transformed_rows:
+        try:
+            source_index = int(row.get("source_row_number") or 0) - 1
+        except (TypeError, ValueError):
+            source_index = -1
+        solde = ""
+        if 0 <= source_index < len(rows) and solde_index < len(rows[source_index]):
+            solde = normalize_balance(rows[source_index][solde_index])
+        if not solde and solde_value_index < len(solde_values):
+            solde = solde_values[solde_value_index]
+        solde_value_index += 1
+        if solde:
+            row["solde"] = solde
+    return transformed_rows
 
 
 def row_text_description(row: list[str]) -> str:
@@ -446,6 +537,7 @@ def manual_transform_transactions(
     data_rows = rows[header_row + 1 :] if header_row >= 0 else rows
     service_by_id = {str(service.get("id")): service for service in services}
     transformed_rows: list[dict[str, str | int | None]] = []
+    solde_index = solde_data_column_index(rows, headers["solde"], header_row) if "solde" in headers else None
 
     for offset, row in enumerate(data_rows, start=header_row + 2 if header_row >= 0 else 1):
         description = clean_cell(row[headers["description"]]) if "description" in headers and headers["description"] < len(row) else row_text_description(row)
@@ -487,7 +579,10 @@ def manual_transform_transactions(
             direction = service_type
 
         fee = normalize_amount(row[headers["fee"]]) if "fee" in headers and headers["fee"] < len(row) else ""
-        solde = normalize_balance(row[headers["solde"]]) if "solde" in headers and headers["solde"] < len(row) else ""
+        if solde_index is not None and solde_index < len(row):
+            solde = normalize_balance(row[solde_index])
+        else:
+            solde = normalize_balance(rightmost_non_empty_cell(row))
         occurred_at = normalize_occurred_at(row[headers["date"]]) if "date" in headers and headers["date"] < len(row) else None
         transformed_rows.append(
             {

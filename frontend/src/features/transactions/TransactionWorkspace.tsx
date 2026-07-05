@@ -4,6 +4,7 @@ import { CompteBox } from '../accounts/CompteBox';
 import { CircleButton } from '../../shared/ui/CircleButton';
 import { Account, Direction, OperationRow, Service } from '../../types';
 import { todayInputValue } from '../../utils/format';
+import { createClientId } from '../../utils/id';
 import { OperationGrid } from './OperationGrid';
 import { useEffect, useState } from 'react';
 
@@ -15,7 +16,7 @@ type TransactionWorkspaceProps = {
 };
 
 function newRow(): OperationRow {
-  return { clientId: crypto.randomUUID(), amount: '', fee: '', status: 'draft' };
+  return { clientId: createClientId(), amount: '', fee: '', status: 'draft' };
 }
 
 function supportsDirection(service: Service, direction: Direction) {
@@ -59,19 +60,19 @@ export function TransactionWorkspace({ service, accounts, onBack, onSaved }: Tra
 
   useEffect(() => {
     let active = true;
-    async function loadTodayTransactions() {
+    async function loadServiceTransactions() {
       setMessage('');
       setError('');
       try {
         const rows = await api<Array<{ id: number; direction: Direction; amount: string; fee: string; occurred_at: string }>>(
-          `/service-transactions?service_id=${service.id}&occurred_on=${date}`,
+          `/service-transactions?service_id=${service.id}`,
         );
         if (!active) return;
         const inItems: OperationRow[] = [];
         const outItems: OperationRow[] = [];
         rows.forEach((row) => {
           const item = {
-            clientId: crypto.randomUUID(),
+            clientId: createClientId(),
             id: row.id,
             amount: String(row.amount),
             fee: String(row.fee ?? ''),
@@ -82,10 +83,10 @@ export function TransactionWorkspace({ service, accounts, onBack, onSaved }: Tra
         setInRows(inItems.length ? [...inItems, newRow()] : [newRow()]);
         setOutRows(outItems.length ? [...outItems, newRow()] : [newRow()]);
       } catch (err) {
-        if (active) setError(err instanceof Error ? err.message : 'Operations du jour non chargees.');
+        if (active) setError(err instanceof Error ? err.message : 'Operations non chargees.');
       }
     }
-    loadTodayTransactions();
+    loadServiceTransactions();
     return () => {
       active = false;
     };

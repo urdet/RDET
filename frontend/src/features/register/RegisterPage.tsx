@@ -3,6 +3,7 @@ import { FileText, Plus, Save, Search, Trash2, Upload } from 'lucide-react';
 import { api } from '../../api';
 import { CircleButton } from '../../shared/ui/CircleButton';
 import { Panel } from '../../shared/ui/Panel';
+import { createClientId } from '../../utils/id';
 
 type ClientDocument = {
   id: string;
@@ -23,13 +24,13 @@ type RegisterPayload = {
 };
 
 function newClient(): RegisterClient {
-  return { id: crypto.randomUUID(), name: '', info: '', documents: [] };
+  return { id: createClientId(), name: '', info: '', documents: [] };
 }
 
 function readFile(file: File): Promise<ClientDocument> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve({ id: crypto.randomUUID(), name: file.name, type: file.type, dataUrl: String(reader.result || '') });
+    reader.onload = () => resolve({ id: createClientId(), name: file.name, type: file.type, dataUrl: String(reader.result || '') });
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });

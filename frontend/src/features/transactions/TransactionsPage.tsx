@@ -31,20 +31,6 @@ function serviceType(service: Service) {
   return service.transaction_type ?? service.switch_type ?? 'IN & OUT';
 }
 
-function fullRowKey(row: ImportRow) {
-  return [
-    row.kind ?? 'service',
-    row.service_id ?? '',
-    row.service.trim().toLowerCase(),
-    row.direction,
-    row.amount.trim(),
-    (row.fee ?? '').trim(),
-    (row.solde ?? '').trim(),
-    row.occurred_at ?? '',
-    (row.description ?? '').trim().toLowerCase(),
-  ].join('|');
-}
-
 function importRowClass(row: ImportRow) {
   return [
     row.status === 'error' ? 'error' : '',
@@ -118,25 +104,6 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
     setError('');
     try {
       const nextRows = [...rows];
-      const seen = new Map<string, number>();
-      let hasDuplicate = false;
-      for (let index = 0; index < nextRows.length; index += 1) {
-        const row = nextRows[index];
-        if (!row.amount || row.status === 'saved') continue;
-        const key = fullRowKey(row);
-        const firstIndex = seen.get(key);
-        if (firstIndex !== undefined) {
-          hasDuplicate = true;
-          nextRows[index] = { ...row, status: 'error', error_message: `Duplicate line: matches row ${firstIndex + 1}` };
-        } else {
-          seen.set(key, index);
-        }
-      }
-      if (hasDuplicate) {
-        setRows(nextRows);
-        setError('Duplicate lines found. Check the highlighted rows.');
-        return;
-      }
       for (let index = 0; index < nextRows.length; index += 1) {
         const row = nextRows[index];
         if (!row.amount || row.status === 'saved' || row.status === 'error') continue;
@@ -156,6 +123,7 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
               direction: row.direction,
               amount: row.amount,
               fee: row.fee || '0',
+              solde: row.solde || null,
               occurred_at: row.occurred_at || null,
               description: row.description,
             }),
