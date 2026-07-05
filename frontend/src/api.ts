@@ -1,6 +1,6 @@
 import { Account, AccountContributionEntry, Agency, AgencyLink, AgencyTransferRule, CurrentUser, InterAgencySettlement, InterAgencyTransfer, InterAgencyTransferStatus, ManagedUser, UserPermissionMap, UserRole } from './types';
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const API_URL = import.meta.env.VITE_API_URL ?? 'http://192.168.1.12:8000';
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('rdet_token');
