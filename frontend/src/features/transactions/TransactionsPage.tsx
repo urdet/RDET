@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { FileSpreadsheet, Loader2, Play, Save, X } from 'lucide-react';
-import { api, getAppSettings } from '../../api';
+import { API_URL, api, getAppSettings } from '../../api';
 import { CircleButton } from '../../shared/ui/CircleButton';
 import { Account, AppSettings, Direction, Service } from '../../types';
 import { TransactionWorkspace } from './TransactionWorkspace';
@@ -89,8 +89,7 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
       formData.append('file', file);
       formData.append('mode', importMode);
       const token = localStorage.getItem('rdet_token');
-      const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
-      const response = await fetch(`${apiUrl}/service-transactions/import-ai`, {
+      const response = await fetch(`${API_URL}/service-transactions/import-ai`, {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,
