@@ -298,13 +298,16 @@ export type AppSettings = {
 export type AppConfigImportReport = {
   accounts_created: number;
   accounts_updated: number;
+  accounts_removed: number;
   account_balances_updated: number;
   services_created: number;
   services_updated: number;
+  services_disabled: number;
   settings_imported: number;
   links_created: number;
   rules_created: number;
   rules_updated: number;
+  rules_disabled: number;
   skipped: string[];
 };
 

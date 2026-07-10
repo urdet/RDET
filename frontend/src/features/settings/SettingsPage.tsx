@@ -148,6 +148,8 @@ export function SettingsPage({ accounts, services }: { accounts: Account[]; serv
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
+    const confirmed = window.confirm('Import will replace the active accounts, services, soldes, settings, and rules for this agency. Old accounts are removed from this agency view, old services and old rules are disabled. Continue?');
+    if (!confirmed) return;
     setError('');
     setImportReport(null);
     setConfigBusy(true);
@@ -247,16 +249,20 @@ export function SettingsPage({ accounts, services }: { accounts: Account[]; serv
               <input ref={fileInputRef} className="hidden" type="file" accept="application/json,.json" onChange={importConfig} />
             </div>
           </div>
+          <div className="formula-help">Import replaces the active service/account setup first, then applies settings and rules that depend on them.</div>
           {importReport && (
             <div className="config-import-report">
               <span>{importReport.accounts_created} comptes crees</span>
               <span>{importReport.accounts_updated} comptes maj</span>
+              <span>{importReport.accounts_removed} comptes retires</span>
               <span>{importReport.account_balances_updated} soldes maj</span>
               <span>{importReport.services_created} services crees</span>
               <span>{importReport.services_updated} services maj</span>
+              <span>{importReport.services_disabled} services desactives</span>
               <span>{importReport.settings_imported} settings</span>
               <span>{importReport.links_created} liens</span>
               <span>{importReport.rules_created + importReport.rules_updated} regles transfert</span>
+              <span>{importReport.rules_disabled} regles desactivees</span>
               {importReport.skipped.length > 0 && <span>{importReport.skipped.length} ignores</span>}
             </div>
           )}

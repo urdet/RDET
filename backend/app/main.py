@@ -731,7 +731,18 @@ def export_app_config(db: Session, user: User) -> dict:
     accounts = list(db.scalars(select(Account).where(Account.company_ids.any(agency_id)).order_by(Account.name)))
     account_names = {account.id: account.name for account in accounts}
 
-    services = list(db.scalars(select(Service).where(Service.company_id == agency_id).order_by(Service.name)))
+    account_ids = select(Account.id).where(Account.company_ids.any(agency_id))
+    services = list(db.scalars(
+        select(Service)
+        .where(
+            or_(
+                Service.company_id == agency_id,
+                Service.primary_account_id.in_(account_ids),
+                Service.secondary_account_id.in_(account_ids),
+            )
+        )
+        .order_by(Service.name)
+    ))
     service_names = {service.id: service.name for service in services}
 
     settings_rows = db.execute(
@@ -769,9 +780,9 @@ def export_app_config(db: Session, user: User) -> dict:
     payload = {
         "format": "rdet-app-config",
         "version": 1,
+        "import_order": ["accounts", "services", "settings", "inter_agency"],
         "exported_at": datetime.now(timezone.utc),
         "agency": {"name": agency.name if agency else None},
-        "settings": settings_payload,
         "accounts": [
             {
                 "name": account.name,
@@ -814,6 +825,7 @@ def export_app_config(db: Session, user: User) -> dict:
             }
             for service in services
         ],
+        "settings": settings_payload,
         "inter_agency": {
             "links": [
                 {
@@ -862,18 +874,28 @@ def import_app_config(db: Session, user: User, payload: dict) -> dict:
     if payload.get("format") != "rdet-app-config":
         raise HTTPException(status_code=400, detail="Invalid config file")
 
-    report = {"accounts_created": 0, "accounts_updated": 0, "account_balances_updated": 0, "services_created": 0, "services_updated": 0, "settings_imported": 0, "links_created": 0, "rules_created": 0, "rules_updated": 0, "skipped": []}
+    report = {"accounts_created": 0, "accounts_updated": 0, "accounts_removed": 0, "account_balances_updated": 0, "services_created": 0, "services_updated": 0, "services_disabled": 0, "settings_imported": 0, "links_created": 0, "rules_created": 0, "rules_updated": 0, "rules_disabled": 0, "skipped": []}
 
-    existing_accounts = {
+    active_agency_accounts = {
         account.name.lower(): account
         for account in db.scalars(select(Account).where(Account.company_ids.any(agency_id))).all()
     }
+    existing_accounts = {
+        account.name.lower(): account
+        for account in db.scalars(select(Account)).all()
+    }
+    imported_account_keys: set[str] = set()
     for item in payload.get("accounts") or []:
         if not isinstance(item, dict) or not str(item.get("name") or "").strip():
             continue
         name = str(item["name"]).strip()
+        imported_account_keys.add(name.lower())
         account = existing_accounts.get(name.lower())
         if account:
+            company_ids = list(account.company_ids or [])
+            if agency_id not in company_ids:
+                company_ids.append(agency_id)
+            account.company_ids = company_ids
             account.visible = item.get("visible", account.visible) is not False
             if item.get("normal_balance_side") in {"debit", "credit"}:
                 account.normal_balance_side = item["normal_balance_side"]
@@ -898,16 +920,41 @@ def import_app_config(db: Session, user: User, payload: dict) -> dict:
             except Exception:
                 report["skipped"].append(f"Balance skipped: {name}")
 
-    account_name_to_id = {account.name: account.id for account in existing_accounts.values()}
+    for key, account in active_agency_accounts.items():
+        if key in imported_account_keys:
+            continue
+        company_ids = list(account.company_ids or [])
+        if agency_id in company_ids:
+            account.company_ids = [item for item in company_ids if item != agency_id]
+            account.visible = False
+            report["accounts_removed"] += 1
 
+    imported_accounts = [account for key, account in existing_accounts.items() if key in imported_account_keys]
+    account_name_to_id = {account.name: account.id for account in imported_accounts}
+
+    active_service_account_ids = [account.id for account in active_agency_accounts.values()]
+    active_agency_services = {
+        service.name.lower(): service
+        for service in db.scalars(
+            select(Service).where(
+                or_(
+                    Service.company_id == agency_id,
+                    Service.primary_account_id.in_(active_service_account_ids),
+                    Service.secondary_account_id.in_(active_service_account_ids),
+                )
+            )
+        ).all()
+    }
     existing_services = {
         service.name.lower(): service
-        for service in db.scalars(select(Service).where(Service.company_id == agency_id)).all()
+        for service in db.scalars(select(Service)).all()
     }
+    imported_service_keys: set[str] = set()
     for item in payload.get("services") or []:
         if not isinstance(item, dict) or not str(item.get("name") or "").strip():
             continue
         name = str(item["name"]).strip()
+        imported_service_keys.add(name.lower())
         service_type = normalize_service_type(str(item.get("transaction_type") or item.get("switch_type") or "IN & OUT"))
         routing_config = {}
         for direction, route in (item.get("routing_config") or {}).items():
@@ -926,6 +973,7 @@ def import_app_config(db: Session, user: User, payload: dict) -> dict:
             report["services_created"] += 1
         else:
             report["services_updated"] += 1
+        service.company_id = agency_id
         service.image_url = item.get("image_url")
         service.transaction_type = service_type
         service.switch_type = item.get("switch_type")
@@ -941,7 +989,13 @@ def import_app_config(db: Session, user: User, payload: dict) -> dict:
                 continue
             db.add(ServiceFeeRule(service_id=service.id, service_type=Direction(rule.get("service_type")), min_amount=Decimal(str(rule.get("min_amount") or 0)), max_amount=Decimal(str(rule.get("max_amount") or 0)), fee=Decimal(str(rule.get("fee") or 0))))
 
-    service_name_to_id = {service.name: service.id for service in existing_services.values()}
+    for key, service in active_agency_services.items():
+        if key not in imported_service_keys and service.active:
+            service.active = False
+            report["services_disabled"] += 1
+
+    imported_services = [service for key, service in existing_services.items() if key in imported_service_keys]
+    service_name_to_id = {service.name: service.id for service in imported_services}
 
     settings_payload = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
     for key, value in settings_payload.items():
@@ -990,11 +1044,19 @@ def import_app_config(db: Session, user: User, payload: dict) -> dict:
         for company_id in account.company_ids or []:
             all_accounts_by_agency_name[(company_id, account.name.lower())] = account
 
+    existing_agency_rules = db.scalars(
+        select(AgencyTransferRule)
+        .where(or_(AgencyTransferRule.source_agency_id == agency_id, AgencyTransferRule.destination_agency_id == agency_id))
+    ).all()
+    imported_rule_keys: set[tuple[str, str, str]] = set()
     for item in (payload.get("inter_agency") or {}).get("transfer_rules") or []:
         source_agency = companies_by_name.get(str(item.get("source_agency_name") or "").lower())
         destination_agency = companies_by_name.get(str(item.get("destination_agency_name") or "").lower())
         source_account = all_accounts_by_agency_name.get((source_agency.id, str(item.get("source_account_name") or "").lower())) if source_agency else None
         destination_account = all_accounts_by_agency_name.get((destination_agency.id, str(item.get("destination_account_name") or "").lower())) if destination_agency else None
+        rule_name = str(item.get("name") or "").strip() or "Imported rule"
+        if source_agency and destination_agency:
+            imported_rule_keys.add((source_agency.name.lower(), destination_agency.name.lower(), rule_name.lower()))
         if not source_agency or not destination_agency or not source_account or not destination_account:
             report["skipped"].append(f"Transfer rule skipped: {item.get('name') or 'unnamed'}")
             continue
@@ -1002,9 +1064,9 @@ def import_app_config(db: Session, user: User, payload: dict) -> dict:
         if not link:
             report["skipped"].append(f"Transfer rule skipped without link: {item.get('name') or 'unnamed'}")
             continue
-        rule = db.scalar(select(AgencyTransferRule).where(AgencyTransferRule.agency_link_id == link.id, AgencyTransferRule.name == str(item.get("name") or "").strip()))
+        rule = db.scalar(select(AgencyTransferRule).where(AgencyTransferRule.agency_link_id == link.id, AgencyTransferRule.name == rule_name))
         if not rule:
-            rule = AgencyTransferRule(agency_link_id=link.id, source_agency_id=source_agency.id, source_account_id=source_account.id, destination_agency_id=destination_agency.id, destination_account_id=destination_account.id, name=str(item.get("name") or "").strip() or "Imported rule", created_by_user_id=user.id)
+            rule = AgencyTransferRule(agency_link_id=link.id, source_agency_id=source_agency.id, source_account_id=source_account.id, destination_agency_id=destination_agency.id, destination_account_id=destination_account.id, name=rule_name, created_by_user_id=user.id)
             db.add(rule)
             report["rules_created"] += 1
         else:
@@ -1013,6 +1075,15 @@ def import_app_config(db: Session, user: User, payload: dict) -> dict:
         rule.source_account_id = source_account.id
         rule.destination_account_id = destination_account.id
         rule.active = item.get("active", True) is not False
+
+    for rule in existing_agency_rules:
+        source_name = rule.source_agency.name.lower() if rule.source_agency else ""
+        destination_name = rule.destination_agency.name.lower() if rule.destination_agency else ""
+        key = (source_name, destination_name, rule.name.lower())
+        if key not in imported_rule_keys and rule.active:
+            rule.active = False
+            rule.status = AgencyTransferRuleStatus.disabled
+            report["rules_disabled"] += 1
 
     write_audit(db, user, AuditArea.company, "config_import", "App config imported", **report)
     db.commit()
