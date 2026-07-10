@@ -98,6 +98,15 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
     setRows((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch, status: 'draft', error_message: '' } : row));
   }
 
+  function updateRowService(index: number, serviceId: string) {
+    const service = services.find((item) => String(item.id) === serviceId);
+    updateRow(index, {
+      service_id: service ? service.id : null,
+      service: service?.name ?? '',
+      kind: service ? 'service' : 'unknown',
+    });
+  }
+
   async function saveImport() {
     setSaving(true);
     setMessage('');
@@ -210,7 +219,12 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
                 <tbody>
                   {rows.map((row, index) => (
                     <tr key={index} className={importRowClass(row)}>
-                      <td>{row.service}</td>
+                      <td>
+                        <select value={row.service_id ? String(row.service_id) : ''} onChange={(event) => updateRowService(index, event.target.value)}>
+                          <option value="">Unmatched</option>
+                          {services.map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}
+                        </select>
+                      </td>
                       <td>{row.kind ?? 'service'}</td>
                       <td>
                         <select value={row.direction} onChange={(event) => updateRow(index, { direction: event.target.value as Direction })}>

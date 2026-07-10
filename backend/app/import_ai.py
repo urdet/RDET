@@ -118,10 +118,10 @@ def normalize_amount(value: Any) -> str:
     text = str(value or "").strip().replace(" ", "").replace(",", ".")
     text = re.sub(r"[^0-9.\-]", "", text)
     try:
-        amount = Decimal(text)
+        amount = abs(Decimal(text))
     except InvalidOperation:
         return ""
-    if amount <= 0:
+    if amount == 0:
         return ""
     return format(amount.quantize(Decimal("0.01")), "f")
 
@@ -500,6 +500,26 @@ def manual_rule_matches(description: str, rule: dict[str, Any]) -> bool:
     return needle in value
 
 
+def manual_row_amount_and_direction(row: list[str], headers: dict[str, int]) -> tuple[str, str | None, str | None]:
+    credit = normalize_amount(row[headers["credit"]]) if "credit" in headers and headers["credit"] < len(row) else ""
+    debit = normalize_amount(row[headers["debit"]]) if "debit" in headers and headers["debit"] < len(row) else ""
+    if credit and debit:
+        return "", None, "Both debit and credit contain values"
+    if credit:
+        return credit, "IN", None
+    if debit:
+        return debit, "OUT", None
+    if "credit" in headers or "debit" in headers:
+        return "", None, "Both debit and credit are empty"
+    if "amount" in headers and headers["amount"] < len(row):
+        raw_amount = clean_cell(row[headers["amount"]])
+        amount = normalize_amount(raw_amount)
+        return amount, "OUT" if raw_amount.strip().startswith("-") else "IN", None if amount else "Amount is empty"
+    numeric_values = [normalize_amount(cell) for cell in row]
+    amount = next((value for value in numeric_values if value), "")
+    return amount, "IN" if amount else None, None if amount else "Amount is empty"
+
+
 def is_fee_description(description: str) -> bool:
     normalized = normalize_header(description)
     if not normalized:
@@ -544,25 +564,22 @@ def manual_transform_transactions(
         if not description:
             continue
 
-        credit = normalize_amount(row[headers["credit"]]) if "credit" in headers and headers["credit"] < len(row) else ""
-        debit = normalize_amount(row[headers["debit"]]) if "debit" in headers and headers["debit"] < len(row) else ""
-        amount = ""
-        direction = "IN"
-        if credit:
-            amount = credit
-            direction = "IN"
-        elif debit:
-            amount = debit
-            direction = "OUT"
-        elif "amount" in headers and headers["amount"] < len(row):
-            raw_amount = clean_cell(row[headers["amount"]])
-            amount = normalize_amount(raw_amount)
-            direction = "OUT" if raw_amount.strip().startswith("-") else "IN"
-        else:
-            numeric_values = [normalize_amount(cell) for cell in row]
-            amount = next((value for value in numeric_values if value), "")
-
-        if direction not in allowed_directions or not amount:
+        amount, column_direction, row_error = manual_row_amount_and_direction(row, headers)
+        if column_direction not in allowed_directions or not amount:
+            transformed_rows.append(
+                {
+                    "kind": "unknown",
+                    "service": "",
+                    "direction": "IN",
+                    "amount": "",
+                    "fee": "",
+                    "solde": "",
+                    "occurred_at": normalize_occurred_at(row[headers["date"]]) if "date" in headers and headers["date"] < len(row) else None,
+                    "description": description,
+                    "source_row_number": offset,
+                    "error_message": row_error or "Direction or amount is invalid",
+                }
+            )
             continue
 
         matched_rule = next((rule for rule in rules if rule.get("enabled", True) and manual_rule_matches(description, rule)), None)
@@ -571,12 +588,8 @@ def manual_transform_transactions(
         if is_fee_description(description) and merge_fee_into_previous_row(transformed_rows, amount, description, service_name or None):
             continue
 
-        service_type = clean_cell(str(service.get("transaction_type") or service.get("switch_type") or "IN & OUT")) if service else "IN & OUT"
         rule_direction = matched_rule.get("direction") if matched_rule and matched_rule.get("direction") in allowed_directions else None
-        if rule_direction:
-            direction = str(rule_direction)
-        elif service_type in {"IN", "OUT"}:
-            direction = service_type
+        direction = str(rule_direction or column_direction)
 
         fee = normalize_amount(row[headers["fee"]]) if "fee" in headers and headers["fee"] < len(row) else ""
         if solde_index is not None and solde_index < len(row):
@@ -595,6 +608,7 @@ def manual_transform_transactions(
                 "occurred_at": occurred_at,
                 "description": description,
                 "source_row_number": offset,
+                "error_message": "" if service and matched_rule else "No manual rule matched this row",
             }
         )
     return transformed_rows
