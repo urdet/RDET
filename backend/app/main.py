@@ -3,6 +3,7 @@ from decimal import Decimal
 import json
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from app.schemas import (
     AccountCreate,
     AccountBalanceUpdate,
     AccountOut,
+    AppConfigImportIn,
     AccountsScreenSettingsIn,
     AgencyLedgerEntryIn,
     AgencyLedgerEntryOut,
@@ -673,6 +675,331 @@ def app_settings(db: Session, company_id: int | None) -> dict:
         {"company_id": company_id},
     ).scalar()
     return value if isinstance(value, dict) else {}
+
+
+CONFIG_SETTING_KEYS = {
+    "accounts_screen_config",
+    "account_action_rules",
+    "app_settings",
+    "register_clients",
+}
+
+
+def config_account_ref(value: object, account_name_to_id: dict[str, int]) -> str:
+    if value in (None, ""):
+        return ""
+    return str(account_name_to_id.get(str(value), value))
+
+
+def config_account_ids(values: object, account_name_to_id: dict[str, int]) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [config_account_ref(item, account_name_to_id) for item in values if config_account_ref(item, account_name_to_id)]
+
+
+def export_config_references(value: object, account_id_to_name: dict[int, str], service_id_to_name: dict[int, str]) -> object:
+    if isinstance(value, list):
+        return [export_config_references(item, account_id_to_name, service_id_to_name) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    next_value = {key: export_config_references(item, account_id_to_name, service_id_to_name) for key, item in value.items()}
+    for key in ["cashAccountId", "unpaidAccountId", "accountId", "fixedAccountId", "fixedFromAccountId", "fixedToAccountId"]:
+        try:
+            account_id = int(next_value.get(key) or 0)
+        except (TypeError, ValueError):
+            account_id = 0
+        if account_id in account_id_to_name:
+            next_value[key] = account_id_to_name[account_id]
+    if isinstance(next_value.get("linkedAccountIds"), list):
+        next_value["linkedAccountIds"] = [
+            account_id_to_name.get(int(item), str(item)) if str(item).isdigit() else str(item)
+            for item in next_value["linkedAccountIds"]
+        ]
+    try:
+        service_id = int(next_value.get("serviceId") or 0)
+    except (TypeError, ValueError):
+        service_id = 0
+    if service_id in service_id_to_name:
+        next_value["serviceId"] = service_id_to_name[service_id]
+    return next_value
+
+
+def export_app_config(db: Session, user: User) -> dict:
+    agency_id = require_agency(user)
+    agency = db.get(Company, agency_id)
+    accounts = list(db.scalars(select(Account).where(Account.company_ids.any(agency_id)).order_by(Account.name)))
+    account_names = {account.id: account.name for account in accounts}
+
+    services = list(db.scalars(select(Service).where(Service.company_id == agency_id).order_by(Service.name)))
+    service_names = {service.id: service.name for service in services}
+
+    settings_rows = db.execute(
+        text("SELECT key, value FROM agency_settings WHERE company_id = :company_id"),
+        {"company_id": agency_id},
+    ).all()
+
+    links = db.scalars(
+        select(AgencyLink)
+        .where(or_(AgencyLink.agency_a_id == agency_id, AgencyLink.agency_b_id == agency_id))
+        .order_by(AgencyLink.created_at, AgencyLink.id)
+    ).all()
+    rules = db.scalars(
+        select(AgencyTransferRule)
+        .where(or_(AgencyTransferRule.source_agency_id == agency_id, AgencyTransferRule.destination_agency_id == agency_id))
+        .order_by(AgencyTransferRule.created_at, AgencyTransferRule.id)
+    ).all()
+
+    settings_payload = {}
+    for row in settings_rows:
+        if row.key not in CONFIG_SETTING_KEYS:
+            continue
+        value = export_config_references(row.value, account_names, service_names)
+        if row.key == "accounts_screen_config" and isinstance(value, dict):
+            remapped_cards = {}
+            for key, config in value.items():
+                try:
+                    account_id = int(key)
+                except (TypeError, ValueError):
+                    account_id = 0
+                remapped_cards[account_names.get(account_id, key)] = config
+            value = remapped_cards
+        settings_payload[row.key] = value
+
+    payload = {
+        "format": "rdet-app-config",
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc),
+        "agency": {"name": agency.name if agency else None},
+        "settings": settings_payload,
+        "accounts": [
+            {
+                "name": account.name,
+                "visible": account.visible,
+                "normal_balance_side": account.normal_balance_side,
+                "legacy_id": account.legacy_id,
+            }
+            for account in accounts
+        ],
+        "services": [
+            {
+                "name": service.name,
+                "image_url": service.image_url,
+                "transaction_type": service.transaction_type,
+                "switch_type": service.switch_type,
+                "primary_account_name": account_names.get(service.primary_account_id) if service.primary_account_id else None,
+                "secondary_account_name": account_names.get(service.secondary_account_id) if service.secondary_account_id else None,
+                "routing_config": {
+                    direction: {
+                        "from_account_name": account_names.get(route.get("from_account_id")),
+                        "to_account_name": account_names.get(route.get("to_account_id")),
+                    }
+                    for direction, route in (service.routing_config or {}).items()
+                    if isinstance(route, dict)
+                },
+                "active": service.active,
+                "fee_rules": [
+                    {
+                        "service_type": rule.service_type.value,
+                        "min_amount": str(rule.min_amount),
+                        "max_amount": str(rule.max_amount),
+                        "fee": str(rule.fee),
+                    }
+                    for rule in service.fee_rules
+                ],
+            }
+            for service in services
+        ],
+        "inter_agency": {
+            "links": [
+                {
+                    "other_agency_name": link.agency_b.name if link.agency_a_id == agency_id and link.agency_b else link.agency_a.name if link.agency_a else None,
+                    "status": link.status.value,
+                }
+                for link in links
+            ],
+            "transfer_rules": [
+                {
+                    "name": rule.name,
+                    "description": rule.description,
+                    "source_agency_name": rule.source_agency.name if rule.source_agency else None,
+                    "source_account_name": account_names.get(rule.source_account_id) or (rule.source_account.name if rule.source_account else None),
+                    "destination_agency_name": rule.destination_agency.name if rule.destination_agency else None,
+                    "destination_account_name": account_names.get(rule.destination_account_id) or (rule.destination_account.name if rule.destination_account else None),
+                    "status": rule.status.value,
+                    "active": rule.active,
+                }
+                for rule in rules
+            ],
+        },
+    }
+    return jsonable_encoder(payload)
+
+
+def remap_config_references(value: object, account_name_to_id: dict[str, int], service_name_to_id: dict[str, int]) -> object:
+    if isinstance(value, list):
+        return [remap_config_references(item, account_name_to_id, service_name_to_id) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    next_value = {key: remap_config_references(item, account_name_to_id, service_name_to_id) for key, item in value.items()}
+    for key in ["cashAccountId", "unpaidAccountId", "accountId", "fixedAccountId", "fixedFromAccountId", "fixedToAccountId"]:
+        if key in next_value:
+            next_value[key] = config_account_ref(next_value[key], account_name_to_id)
+    if "linkedAccountIds" in next_value:
+        next_value["linkedAccountIds"] = config_account_ids(next_value["linkedAccountIds"], account_name_to_id)
+    if "serviceId" in next_value and next_value["serviceId"] not in (None, ""):
+        next_value["serviceId"] = str(service_name_to_id.get(str(next_value["serviceId"]), next_value["serviceId"]))
+    return next_value
+
+
+def import_app_config(db: Session, user: User, payload: dict) -> dict:
+    agency_id = require_agency(user)
+    if payload.get("format") != "rdet-app-config":
+        raise HTTPException(status_code=400, detail="Invalid config file")
+
+    report = {"accounts_created": 0, "accounts_updated": 0, "services_created": 0, "services_updated": 0, "settings_imported": 0, "links_created": 0, "rules_created": 0, "rules_updated": 0, "skipped": []}
+
+    existing_accounts = {
+        account.name.lower(): account
+        for account in db.scalars(select(Account).where(Account.company_ids.any(agency_id))).all()
+    }
+    for item in payload.get("accounts") or []:
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            continue
+        name = str(item["name"]).strip()
+        account = existing_accounts.get(name.lower())
+        if account:
+            account.visible = item.get("visible", account.visible) is not False
+            if item.get("normal_balance_side") in {"debit", "credit"}:
+                account.normal_balance_side = item["normal_balance_side"]
+            report["accounts_updated"] += 1
+        else:
+            account = Account(name=name, balance=0, previous_balance=0, debit_total=0, credit_total=0, normal_balance_side=item.get("normal_balance_side") if item.get("normal_balance_side") in {"debit", "credit"} else "debit", visible=item.get("visible", True) is not False, company_ids=[agency_id], legacy_id=None)
+            db.add(account)
+            db.flush()
+            existing_accounts[name.lower()] = account
+            report["accounts_created"] += 1
+
+    account_name_to_id = {account.name: account.id for account in existing_accounts.values()}
+
+    existing_services = {
+        service.name.lower(): service
+        for service in db.scalars(select(Service).where(Service.company_id == agency_id)).all()
+    }
+    for item in payload.get("services") or []:
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            continue
+        name = str(item["name"]).strip()
+        service_type = normalize_service_type(str(item.get("transaction_type") or item.get("switch_type") or "IN & OUT"))
+        routing_config = {}
+        for direction, route in (item.get("routing_config") or {}).items():
+            if not isinstance(route, dict):
+                continue
+            from_id = account_name_to_id.get(str(route.get("from_account_name") or ""))
+            to_id = account_name_to_id.get(str(route.get("to_account_name") or ""))
+            if from_id and to_id:
+                routing_config[direction] = {"from_account_id": from_id, "to_account_id": to_id}
+        service = existing_services.get(name.lower())
+        if not service:
+            service = Service(company_id=agency_id, name=name)
+            db.add(service)
+            db.flush()
+            existing_services[name.lower()] = service
+            report["services_created"] += 1
+        else:
+            report["services_updated"] += 1
+        service.image_url = item.get("image_url")
+        service.transaction_type = service_type
+        service.switch_type = item.get("switch_type")
+        service.primary_account_id = account_name_to_id.get(str(item.get("primary_account_name") or ""))
+        service.secondary_account_id = account_name_to_id.get(str(item.get("secondary_account_name") or ""))
+        service.routing_config = validate_service_routing(db, agency_id, service_type, routing_config)
+        service.active = item.get("active", True) is not False
+        db.query(ServiceFeeRule).filter(ServiceFeeRule.service_id == service.id).delete()
+        for rule in item.get("fee_rules") or []:
+            if not isinstance(rule, dict):
+                continue
+            if rule.get("service_type") not in {Direction.in_.value, Direction.out.value}:
+                continue
+            db.add(ServiceFeeRule(service_id=service.id, service_type=Direction(rule.get("service_type")), min_amount=Decimal(str(rule.get("min_amount") or 0)), max_amount=Decimal(str(rule.get("max_amount") or 0)), fee=Decimal(str(rule.get("fee") or 0))))
+
+    service_name_to_id = {service.name: service.id for service in existing_services.values()}
+
+    settings_payload = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+    for key, value in settings_payload.items():
+        if key not in CONFIG_SETTING_KEYS:
+            continue
+        remapped = remap_config_references(value, account_name_to_id, service_name_to_id)
+        if key == "accounts_screen_config" and isinstance(remapped, dict):
+            remapped_cards = {}
+            for account_name, config in remapped.items():
+                remapped_cards[str(account_name_to_id.get(str(account_name), account_name))] = config
+            remapped = remapped_cards
+        db.execute(
+            text("""
+                INSERT INTO agency_settings (company_id, key, value, updated_at)
+                VALUES (:company_id, :key, CAST(:value AS jsonb), now())
+                ON CONFLICT (company_id, key)
+                DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+            """),
+            {"company_id": agency_id, "key": key, "value": json.dumps(remapped)},
+        )
+        report["settings_imported"] += 1
+
+    companies_by_name = {company.name.lower(): company for company in db.scalars(select(Company)).all()}
+    existing_links = {
+        frozenset([link.agency_a_id, link.agency_b_id]): link
+        for link in db.scalars(select(AgencyLink).where(or_(AgencyLink.agency_a_id == agency_id, AgencyLink.agency_b_id == agency_id))).all()
+    }
+    for item in (payload.get("inter_agency") or {}).get("links") or []:
+        other_name = str(item.get("other_agency_name") or "").strip()
+        other = companies_by_name.get(other_name.lower())
+        if not other:
+            report["skipped"].append(f"Agency link skipped: {other_name}")
+            continue
+        key = frozenset([agency_id, other.id])
+        if key in existing_links:
+            continue
+        left, right = sorted([agency_id, other.id])
+        link = AgencyLink(agency_a_id=left, agency_b_id=right, status=AgencyLinkStatus.pending, requested_agency_id=agency_id, target_agency_id=other.id, requested_by_user_id=user.id)
+        db.add(link)
+        db.flush()
+        existing_links[key] = link
+        report["links_created"] += 1
+
+    all_accounts_by_agency_name: dict[tuple[int, str], Account] = {}
+    for account in db.scalars(select(Account)).all():
+        for company_id in account.company_ids or []:
+            all_accounts_by_agency_name[(company_id, account.name.lower())] = account
+
+    for item in (payload.get("inter_agency") or {}).get("transfer_rules") or []:
+        source_agency = companies_by_name.get(str(item.get("source_agency_name") or "").lower())
+        destination_agency = companies_by_name.get(str(item.get("destination_agency_name") or "").lower())
+        source_account = all_accounts_by_agency_name.get((source_agency.id, str(item.get("source_account_name") or "").lower())) if source_agency else None
+        destination_account = all_accounts_by_agency_name.get((destination_agency.id, str(item.get("destination_account_name") or "").lower())) if destination_agency else None
+        if not source_agency or not destination_agency or not source_account or not destination_account:
+            report["skipped"].append(f"Transfer rule skipped: {item.get('name') or 'unnamed'}")
+            continue
+        link = existing_links.get(frozenset([source_agency.id, destination_agency.id]))
+        if not link:
+            report["skipped"].append(f"Transfer rule skipped without link: {item.get('name') or 'unnamed'}")
+            continue
+        rule = db.scalar(select(AgencyTransferRule).where(AgencyTransferRule.agency_link_id == link.id, AgencyTransferRule.name == str(item.get("name") or "").strip()))
+        if not rule:
+            rule = AgencyTransferRule(agency_link_id=link.id, source_agency_id=source_agency.id, source_account_id=source_account.id, destination_agency_id=destination_agency.id, destination_account_id=destination_account.id, name=str(item.get("name") or "").strip() or "Imported rule", created_by_user_id=user.id)
+            db.add(rule)
+            report["rules_created"] += 1
+        else:
+            report["rules_updated"] += 1
+        rule.description = item.get("description")
+        rule.source_account_id = source_account.id
+        rule.destination_account_id = destination_account.id
+        rule.active = item.get("active", True) is not False
+
+    write_audit(db, user, AuditArea.company, "config_import", "App config imported", **report)
+    db.commit()
+    return report
 
 
 def has_permission(user: User, db: Session, screen: str, action: str) -> bool:
@@ -1425,6 +1752,16 @@ def save_app_settings(payload: AccountsScreenSettingsIn, user: User = Depends(re
     )
     db.commit()
     return payload.config
+
+
+@app.get("/settings/config-export")
+def get_config_export(user: User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    return export_app_config(db, user)
+
+
+@app.post("/settings/config-import")
+def post_config_import(payload: AppConfigImportIn, user: User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    return import_app_config(db, user, payload.config)
 
 
 @app.get("/register-clients")

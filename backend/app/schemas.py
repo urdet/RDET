@@ -119,6 +119,10 @@ class AccountsScreenSettingsIn(BaseModel):
     config: dict[str, Any]
 
 
+class AppConfigImportIn(BaseModel):
+    config: dict[str, Any]
+
+
 class TransferCreate(BaseModel):
     from_account_id: int | None = None
     to_account_id: int | None = None

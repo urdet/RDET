@@ -295,6 +295,18 @@ export type AppSettings = {
   rolePermissions?: RolePermissions;
 };
 
+export type AppConfigImportReport = {
+  accounts_created: number;
+  accounts_updated: number;
+  services_created: number;
+  services_updated: number;
+  settings_imported: number;
+  links_created: number;
+  rules_created: number;
+  rules_updated: number;
+  skipped: string[];
+};
+
 export type ManualImportMatchType = 'starts_with' | 'equals' | 'contains' | 'ends_with' | 'regex';
 
 export type ManualImportRule = {

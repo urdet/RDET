@@ -1,11 +1,11 @@
-import { Plus, Save, Settings2, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { getAppSettings, saveAppSettings } from '../../api';
+import { Download, Plus, Save, Settings2, Trash2, Upload } from 'lucide-react';
+import { ChangeEvent, useEffect, useRef, useState } from 'react';
+import { exportAppConfig, getAppSettings, importAppConfig, saveAppSettings } from '../../api';
 import { screens } from '../../navigation';
 import { emptySectionPermission, permissionActionLabels, permissionActions } from '../../permissions';
 import { CircleButton } from '../../shared/ui/CircleButton';
 import { Panel } from '../../shared/ui/Panel';
-import { Account, AppSettings, ManualImportRule, PermissionAction, ScreenId, Service, UserRole } from '../../types';
+import { Account, AppConfigImportReport, AppSettings, ManualImportRule, PermissionAction, ScreenId, Service, UserRole } from '../../types';
 
 const defaultSettings: AppSettings = {
   cashAccountId: '',
@@ -72,6 +72,9 @@ export function SettingsPage({ accounts, services }: { accounts: Account[]; serv
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [configBusy, setConfigBusy] = useState(false);
+  const [importReport, setImportReport] = useState<AppConfigImportReport | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     getAppSettings<Partial<AppSettings>>()
@@ -115,6 +118,64 @@ export function SettingsPage({ accounts, services }: { accounts: Account[]; serv
       setSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sauvegarde impossible.');
+    }
+  }
+
+  async function exportConfig() {
+    setError('');
+    setImportReport(null);
+    setConfigBusy(true);
+    try {
+      const config = await exportAppConfig();
+      const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      anchor.href = url;
+      anchor.download = `rdet-config-${stamp}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export impossible.');
+    } finally {
+      setConfigBusy(false);
+    }
+  }
+
+  async function importConfig(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setError('');
+    setImportReport(null);
+    setConfigBusy(true);
+    try {
+      const parsed = JSON.parse(await file.text()) as Record<string, unknown>;
+      const report = await importAppConfig(parsed);
+      setImportReport(report);
+      const value = await getAppSettings<Partial<AppSettings>>();
+      setSettings({
+        ...defaultSettings,
+        ...value,
+        cashAccountId: String(value.cashAccountId ?? ''),
+        unpaidAccountId: String(value.unpaidAccountId ?? ''),
+        aiProvider: value.aiProvider === 'google_gemini' ? 'google_gemini' : 'openai',
+        importMode: value.importMode === 'manual' ? 'manual' : 'ai',
+        openaiApiKey: String(value.openaiApiKey ?? ''),
+        openaiModel: String(value.openaiModel ?? defaultSettings.openaiModel),
+        geminiApiKey: String(value.geminiApiKey ?? ''),
+        geminiModel: String(value.geminiModel ?? defaultSettings.geminiModel),
+        openaiImportPrompt: String(value.openaiImportPrompt ?? defaultSettings.openaiImportPrompt),
+        manualImportRules: cleanManualRules(value.manualImportRules),
+        rolePermissions: value.rolePermissions ?? {},
+      });
+      setSaved(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import impossible.');
+    } finally {
+      setConfigBusy(false);
     }
   }
 
@@ -177,6 +238,28 @@ export function SettingsPage({ accounts, services }: { accounts: Account[]; serv
             </select>
           </label>
         </div>
+        <section className="config-section">
+          <div className="config-section-header">
+            <h3>Configuration</h3>
+            <div className="settings-inline-actions">
+              <button type="button" className="settings-small-action" disabled={configBusy} onClick={exportConfig}><Download className="h-4 w-4" /> Export</button>
+              <button type="button" className="settings-small-action" disabled={configBusy} onClick={() => fileInputRef.current?.click()}><Upload className="h-4 w-4" /> Import</button>
+              <input ref={fileInputRef} className="hidden" type="file" accept="application/json,.json" onChange={importConfig} />
+            </div>
+          </div>
+          {importReport && (
+            <div className="config-import-report">
+              <span>{importReport.accounts_created} comptes crees</span>
+              <span>{importReport.accounts_updated} comptes maj</span>
+              <span>{importReport.services_created} services crees</span>
+              <span>{importReport.services_updated} services maj</span>
+              <span>{importReport.settings_imported} settings</span>
+              <span>{importReport.links_created} liens</span>
+              <span>{importReport.rules_created + importReport.rules_updated} regles transfert</span>
+              {importReport.skipped.length > 0 && <span>{importReport.skipped.length} ignores</span>}
+            </div>
+          )}
+        </section>
         <section className="config-section">
           <div className="config-section-header">
             <h3>Excel import</h3>

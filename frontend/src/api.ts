@@ -1,4 +1,4 @@
-import { Account, AccountContributionEntry, Agency, AgencyLink, AgencyTransferRule, CurrentUser, InterAgencySettlement, InterAgencyTransfer, InterAgencyTransferStatus, ManagedUser, UserPermissionMap, UserRole } from './types';
+import { Account, AccountContributionEntry, Agency, AgencyLink, AgencyTransferRule, AppConfigImportReport, CurrentUser, InterAgencySettlement, InterAgencyTransfer, InterAgencyTransferStatus, ManagedUser, UserPermissionMap, UserRole } from './types';
 
 function defaultApiUrl() {
   if (typeof window === 'undefined') {
@@ -198,6 +198,17 @@ export async function getAppSettings<T>() {
 export async function saveAppSettings<T>(config: T) {
   return api<T>('/settings/app', {
     method: 'PATCH',
+    body: JSON.stringify({ config }),
+  });
+}
+
+export async function exportAppConfig() {
+  return api<Record<string, unknown>>('/settings/config-export');
+}
+
+export async function importAppConfig(config: Record<string, unknown>) {
+  return api<AppConfigImportReport>('/settings/config-import', {
+    method: 'POST',
     body: JSON.stringify({ config }),
   });
 }

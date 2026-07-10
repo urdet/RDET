@@ -1610,6 +1610,32 @@ button {
   font-weight: 600;
 }
 
+.settings-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.config-import-report {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  color: #57534e;
+  font-size: 12px;
+}
+
+.config-import-report span {
+  border: 1px solid #e8e5df;
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: #ffffff;
+}
+
+.hidden {
+  display: none;
+}
+
 .formula-help {
   margin-top: 6px;
   color: #8c877f;
