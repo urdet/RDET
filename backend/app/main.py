@@ -775,6 +775,10 @@ def export_app_config(db: Session, user: User) -> dict:
         "accounts": [
             {
                 "name": account.name,
+                "balance": str(account_display_balance(account)),
+                "previous_balance": str(account.previous_balance) if account.previous_balance is not None else None,
+                "debit_total": str(account.debit_total or 0),
+                "credit_total": str(account.credit_total or 0),
                 "visible": account.visible,
                 "normal_balance_side": account.normal_balance_side,
                 "legacy_id": account.legacy_id,
@@ -858,7 +862,7 @@ def import_app_config(db: Session, user: User, payload: dict) -> dict:
     if payload.get("format") != "rdet-app-config":
         raise HTTPException(status_code=400, detail="Invalid config file")
 
-    report = {"accounts_created": 0, "accounts_updated": 0, "services_created": 0, "services_updated": 0, "settings_imported": 0, "links_created": 0, "rules_created": 0, "rules_updated": 0, "skipped": []}
+    report = {"accounts_created": 0, "accounts_updated": 0, "account_balances_updated": 0, "services_created": 0, "services_updated": 0, "settings_imported": 0, "links_created": 0, "rules_created": 0, "rules_updated": 0, "skipped": []}
 
     existing_accounts = {
         account.name.lower(): account
@@ -880,6 +884,19 @@ def import_app_config(db: Session, user: User, payload: dict) -> dict:
             db.flush()
             existing_accounts[name.lower()] = account
             report["accounts_created"] += 1
+        if "debit_total" in item or "credit_total" in item or "balance" in item:
+            try:
+                if "debit_total" in item or "credit_total" in item:
+                    account.debit_total = Decimal(str(item.get("debit_total") or 0))
+                    account.credit_total = Decimal(str(item.get("credit_total") or 0))
+                    sync_account_balance(account)
+                else:
+                    reset_account_opening_balance(account, Decimal(str(item.get("balance") or 0)), account.normal_balance_side)
+                account.previous_balance = Decimal(str(item["previous_balance"])) if item.get("previous_balance") is not None else account.balance
+                account.updated_at = datetime.now(timezone.utc)
+                report["account_balances_updated"] += 1
+            except Exception:
+                report["skipped"].append(f"Balance skipped: {name}")
 
     account_name_to_id = {account.name: account.id for account in existing_accounts.values()}
 

@@ -251,6 +251,7 @@ export function SettingsPage({ accounts, services }: { accounts: Account[]; serv
             <div className="config-import-report">
               <span>{importReport.accounts_created} comptes crees</span>
               <span>{importReport.accounts_updated} comptes maj</span>
+              <span>{importReport.account_balances_updated} soldes maj</span>
               <span>{importReport.services_created} services crees</span>
               <span>{importReport.services_updated} services maj</span>
               <span>{importReport.settings_imported} settings</span>

@@ -298,6 +298,7 @@ export type AppSettings = {
 export type AppConfigImportReport = {
   accounts_created: number;
   accounts_updated: number;
+  account_balances_updated: number;
   services_created: number;
   services_updated: number;
   settings_imported: number;
