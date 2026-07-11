@@ -53,6 +53,8 @@ CREATE TABLE account_transfers (
     is_paid BOOLEAN NOT NULL DEFAULT FALSE,
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by BIGINT REFERENCES users(id),
+    import_batch_id TEXT,
+    import_source TEXT,
     reversed_at TIMESTAMPTZ,
     reversal_reason TEXT
 );
@@ -140,9 +142,12 @@ CREATE TABLE service_transactions (
     direction transaction_direction NOT NULL,
     amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
     fee NUMERIC(14,2) NOT NULL DEFAULT 0,
+    solde NUMERIC(14,2),
     description TEXT,
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_by BIGINT REFERENCES users(id),
+    import_batch_id TEXT,
+    import_source TEXT,
     reversed_at TIMESTAMPTZ,
     reversal_reason TEXT
 );

@@ -225,13 +225,18 @@ def ensure_multi_agency_schema() -> None:
             AND ledger.balance_effect < 0
       """))
       db.execute(text("ALTER TABLE account_transfers ADD COLUMN IF NOT EXISTS contributions JSONB"))
+      db.execute(text("ALTER TABLE account_transfers ADD COLUMN IF NOT EXISTS import_batch_id TEXT"))
+      db.execute(text("ALTER TABLE account_transfers ADD COLUMN IF NOT EXISTS import_source TEXT"))
       db.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS company_id BIGINT REFERENCES companies(id)"))
       db.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS image_url TEXT"))
       db.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS routing_config JSONB"))
       db.execute(text("ALTER TABLE services ALTER COLUMN primary_account_id DROP NOT NULL"))
       db.execute(text("ALTER TABLE services ALTER COLUMN secondary_account_id DROP NOT NULL"))
       db.execute(text("ALTER TABLE service_transactions ADD COLUMN IF NOT EXISTS solde NUMERIC(14,2)"))
+      db.execute(text("ALTER TABLE service_transactions ADD COLUMN IF NOT EXISTS import_batch_id TEXT"))
+      db.execute(text("ALTER TABLE service_transactions ADD COLUMN IF NOT EXISTS import_source TEXT"))
       db.execute(text("CREATE INDEX IF NOT EXISTS idx_service_transactions_solde ON service_transactions(solde) WHERE solde IS NOT NULL"))
+      db.execute(text("CREATE INDEX IF NOT EXISTS idx_service_transactions_import_batch ON service_transactions(import_batch_id) WHERE import_batch_id IS NOT NULL"))
       db.execute(text("""
           CREATE TABLE IF NOT EXISTS unpaid_movements (
               id BIGSERIAL PRIMARY KEY,
@@ -2274,6 +2279,8 @@ def service_transaction_payload(tx: ServiceTransaction) -> dict:
         "solde": tx.solde,
         "description": tx.description,
         "occurred_at": tx.occurred_at,
+        "import_batch_id": tx.import_batch_id,
+        "import_source": tx.import_source,
     }
 
 
@@ -2305,8 +2312,7 @@ def list_service_transactions(
             ServiceTransaction.reversed_at.is_(None),
         )
     )
-    if occurred_on:
-        query = query.where(func.date(ServiceTransaction.occurred_at) == occurred_on)
+    query = query.where(func.date(ServiceTransaction.occurred_at) == (occurred_on or date.today()))
     if user.company_id:
         query = query.where(User.company_id == user.company_id)
     rows = db.scalars(query.order_by(ServiceTransaction.occurred_at.desc(), ServiceTransaction.id.desc())).all()
@@ -2330,6 +2336,30 @@ def delete_service_transaction(transaction_id: int, user: User = Depends(current
     tx = owned_service_transaction(db, transaction_id, user)
     reverse_service_transaction(db, tx, user)
     return {"deleted": True}
+
+
+@app.delete("/service-transactions/import-batches/{batch_id}")
+def delete_service_transaction_import_batch(batch_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, int]:
+    clean_batch_id = batch_id.strip()
+    if not clean_batch_id:
+        raise HTTPException(status_code=400, detail="Import batch id is required")
+    query = (
+        select(ServiceTransaction)
+        .join(User, User.id == ServiceTransaction.created_by)
+        .where(
+            ServiceTransaction.import_batch_id == clean_batch_id,
+            ServiceTransaction.reversed_at.is_(None),
+        )
+        .order_by(ServiceTransaction.id.desc())
+    )
+    if user.company_id:
+        query = query.where(User.company_id == user.company_id)
+    rows = db.scalars(query).all()
+    count = 0
+    for tx in rows:
+        reverse_service_transaction(db, tx, user)
+        count += 1
+    return {"deleted": count}
 
 
 @app.post("/service-transactions/import-ai")

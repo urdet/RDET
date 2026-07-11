@@ -490,6 +490,8 @@ def create_service_transaction(db: Session, payload, user: User) -> ServiceTrans
         description=payload.description,
         occurred_at=payload.occurred_at or datetime.now(timezone.utc),
         created_by=user.id,
+        import_batch_id=getattr(payload, "import_batch_id", None),
+        import_source=getattr(payload, "import_source", None),
     )
     db.add(tx)
     audit(db, user, AuditArea.service, "create", "Service transaction", service=service.name, amount=str(amount), fee=str(fee))

@@ -198,6 +198,8 @@ export type OperationRow = {
   amount: string;
   fee: string;
   status: 'draft' | 'saving' | 'saved' | 'error';
+  import_batch_id?: string | null;
+  import_source?: string | null;
 };
 
 export type WorkflowNodeKind = 'trigger' | 'account' | 'operation' | 'condition' | 'fee' | 'audit';

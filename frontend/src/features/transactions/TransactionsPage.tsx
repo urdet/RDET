@@ -25,6 +25,8 @@ type ImportRow = {
   error_message?: string;
   source_row_number?: number;
   id?: number;
+  import_batch_id?: string | null;
+  import_source?: string | null;
 };
 
 function serviceType(service: Service) {
@@ -47,6 +49,7 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [importMode, setImportMode] = useState<'ai' | 'manual'>('ai');
+  const [importBatchId, setImportBatchId] = useState<string | null>(null);
 
   useEffect(() => {
     getAppSettings<Partial<AppSettings>>()
@@ -85,7 +88,9 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
         throw new Error(body.detail ?? `Import failed: ${response.status}`);
       }
       const body = await response.json() as { rows: ImportRow[]; mode?: string };
-      setRows(body.rows.map((row) => ({ ...row, status: row.status ?? 'draft' })));
+      const batchId = `excel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setImportBatchId(batchId);
+      setRows(body.rows.map((row) => ({ ...row, import_batch_id: batchId, import_source: file.name, status: row.status ?? 'draft' })));
       setMessage(`${body.rows.length} rows ready to review with ${body.mode === 'manual' ? 'manual rules' : 'AI scan'}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed.');
@@ -135,6 +140,8 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
               solde: row.solde || null,
               occurred_at: row.occurred_at || null,
               description: row.description,
+              import_batch_id: row.import_batch_id || importBatchId,
+              import_source: row.import_source || 'Excel import',
             }),
           });
           nextRows[index] = { ...row, id: saved.id, status: 'saved', error_message: '' };
@@ -147,9 +154,26 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
         setError('Some rows were not saved. Check the red rows.');
         return;
       }
-      setRows([]);
       await onSaved();
-      setMessage('Import saved.');
+      setMessage(`Import saved. Batch: ${importBatchId ?? 'Excel import'}.`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function cancelImportBatch() {
+    const batchId = importBatchId || rows.find((row) => row.import_batch_id)?.import_batch_id;
+    if (!batchId) return;
+    setSaving(true);
+    setMessage('');
+    setError('');
+    try {
+      const result = await api<{ deleted: number }>(`/service-transactions/import-batches/${encodeURIComponent(batchId)}`, { method: 'DELETE' });
+      setRows((current) => current.map((row) => row.import_batch_id === batchId ? { ...row, status: 'draft', id: undefined, error_message: 'Batch cancelled' } : row));
+      await onSaved();
+      setMessage(`${result.deleted} transactions cancelled from this Excel batch.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Batch not cancelled.');
     } finally {
       setSaving(false);
     }
@@ -157,9 +181,12 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
 
   function cancelImport() {
     setRows([]);
+    setImportBatchId(null);
     setMessage('');
     setError('');
   }
+
+  const savedBatchRows = rows.filter((row) => row.import_batch_id && row.status === 'saved').length;
 
   return (
     <div className="transactions-home">
@@ -172,6 +199,7 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
           </div>
           <div className="transaction-import-actions">
             <CircleButton title={saving ? 'Saving' : 'Save'} icon={Save} onClick={saveImport} />
+            {savedBatchRows > 0 && <CircleButton title="Cancel Excel batch" icon={X} onClick={cancelImportBatch} />}
             <CircleButton title="Cancel" icon={X} onClick={cancelImport} />
           </div>
         </div>
@@ -200,6 +228,7 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
               <span>IN: {totals.IN.toFixed(2)}</span>
               <span>OUT: {totals.OUT.toFixed(2)}</span>
               <span>Charges: {totals.charges.toFixed(2)}</span>
+              {importBatchId && <span>Excel batch: {savedBatchRows} saved</span>}
             </div>
             <div className="transaction-import-table">
               <table>
@@ -212,6 +241,7 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
                     <th>Fee</th>
                     <th>Solde</th>
                     <th>Date/time</th>
+                    <th>Import</th>
                     <th>Description</th>
                     <th>Status</th>
                   </tr>
@@ -236,6 +266,7 @@ export function TransactionsPage({ services, accounts, onSaved }: TransactionsPa
                       <td><input value={row.fee ?? ''} inputMode="decimal" onChange={(event) => updateRow(index, { fee: event.target.value })} /></td>
                       <td><input value={row.solde ?? ''} inputMode="decimal" onChange={(event) => updateRow(index, { solde: event.target.value })} /></td>
                       <td><input value={row.occurred_at ?? ''} onChange={(event) => updateRow(index, { occurred_at: event.target.value })} /></td>
+                      <td>{row.import_batch_id ? 'Excel' : ''}</td>
                       <td><input value={row.description ?? ''} onChange={(event) => updateRow(index, { description: event.target.value })} /></td>
                       <td title={row.error_message}>{row.error_message || row.status || 'draft'}</td>
                     </tr>

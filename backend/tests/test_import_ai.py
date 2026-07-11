@@ -116,6 +116,35 @@ class ManualImportTests(unittest.TestCase):
         self.assertEqual(totals["OUT"], Decimal("100.00"))
         self.assertEqual(result[-1]["solde"], "925.00")
 
+    def test_frais_in_opposite_column_uses_opposite_previous_type(self) -> None:
+        rules = [
+            {
+                "id": "r-cnss",
+                "enabled": True,
+                "matchType": "contains",
+                "pattern": "mad cnss",
+                "serviceId": "2",
+                "direction": "IN",
+                "caseSensitive": False,
+            }
+        ]
+        rows = [
+            ["Date", "Description", "Debit", "Credit", "Solde"],
+            ["04/07/2026 13:59", "Paiement mad cnss", "", "196,00", "361.810,02"],
+            ["04/07/2026 13:59", "Frais mad cnss", "15", "", "361.795,02"],
+        ]
+
+        result = manual_transform_transactions(rows, rules, SERVICES, ["IN", "OUT"])
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["description"], "Paiement mad cnss")
+        self.assertEqual(result[0]["direction"], "IN")
+        self.assertEqual(result[0]["amount"], "196.00")
+        self.assertEqual(result[0]["fee"], "")
+        self.assertEqual(result[1]["description"], "Frais mad cnss")
+        self.assertEqual(result[1]["direction"], "OUT")
+        self.assertEqual(result[1]["amount"], "15.00")
+        self.assertEqual(result[1]["fee"], "")
 
 if __name__ == "__main__":
     unittest.main()

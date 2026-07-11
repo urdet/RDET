@@ -73,7 +73,7 @@ export function OperationGrid({ direction, rows, hasFees, autoSave, onAdd, onCha
               )}
               <td className="status-col">
                 <button className={`row-status ${row.status}`} title={statusLabel[row.status]} onClick={() => onCommit(row.clientId)} disabled={locked || !row.amount}>
-                  {statusLabel[row.status]}
+                  {row.import_batch_id ? 'Excel' : statusLabel[row.status]}
                 </button>
               </td>
               <td>

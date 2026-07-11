@@ -529,13 +529,15 @@ def is_fee_description(description: str) -> bool:
     return bool(words & fee_words) or normalized.startswith(("frais ", "fee ", "commission ", "charge "))
 
 
-def merge_fee_into_previous_row(transformed_rows: list[dict[str, str | int | None]], amount: str, description: str, service_name: str | None = None) -> bool:
+def merge_fee_into_previous_row(transformed_rows: list[dict[str, str | int | None]], amount: str, description: str, service_name: str | None = None, source_direction: str | None = None) -> bool:
     if not amount:
         return False
     for previous in reversed(transformed_rows[-4:]):
         if previous.get("kind") != "service":
             continue
         if service_name and previous.get("service") != service_name:
+            continue
+        if source_direction and previous.get("source_column_direction") != source_direction:
             continue
         existing_fee = normalize_amount(previous.get("fee")) or "0"
         merged_fee = Decimal(existing_fee) + Decimal(amount)
@@ -545,6 +547,21 @@ def merge_fee_into_previous_row(transformed_rows: list[dict[str, str | int | Non
             previous["description"] = clean_cell(f"{previous_description} | {description}") if previous_description else description
         return True
     return False
+
+
+def previous_service_direction(transformed_rows: list[dict[str, str | int | None]]) -> str | None:
+    for previous in reversed(transformed_rows[-4:]):
+        if previous.get("kind") == "service" and previous.get("direction") in {"IN", "OUT"}:
+            return str(previous["direction"])
+    return None
+
+
+def opposite_direction(direction: str | None) -> str | None:
+    if direction == "IN":
+        return "OUT"
+    if direction == "OUT":
+        return "IN"
+    return None
 
 
 def manual_transform_transactions(
@@ -585,11 +602,12 @@ def manual_transform_transactions(
         matched_rule = next((rule for rule in rules if rule.get("enabled", True) and manual_rule_matches(description, rule)), None)
         service = service_by_id.get(str(matched_rule.get("serviceId"))) if matched_rule else None
         service_name = clean_cell(str(service.get("name") or "")) if service else ""
-        if is_fee_description(description) and merge_fee_into_previous_row(transformed_rows, amount, description, service_name or None):
-            continue
-
         rule_direction = matched_rule.get("direction") if matched_rule and matched_rule.get("direction") in allowed_directions else None
-        direction = str(rule_direction or column_direction)
+        is_fee_row = is_fee_description(description)
+
+        if is_fee_row and merge_fee_into_previous_row(transformed_rows, amount, description, service_name or None, column_direction):
+            continue
+        direction = str(opposite_direction(previous_service_direction(transformed_rows)) or column_direction) if is_fee_row else str(rule_direction or column_direction)
 
         fee = normalize_amount(row[headers["fee"]]) if "fee" in headers and headers["fee"] < len(row) else ""
         if solde_index is not None and solde_index < len(row):
@@ -608,6 +626,7 @@ def manual_transform_transactions(
                 "occurred_at": occurred_at,
                 "description": description,
                 "source_row_number": offset,
+                "source_column_direction": column_direction,
                 "error_message": "" if service and matched_rule else "No manual rule matched this row",
             }
         )

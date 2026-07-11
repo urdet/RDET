@@ -64,8 +64,8 @@ export function TransactionWorkspace({ service, accounts, onBack, onSaved }: Tra
       setMessage('');
       setError('');
       try {
-        const rows = await api<Array<{ id: number; direction: Direction; amount: string; fee: string; occurred_at: string }>>(
-          `/service-transactions?service_id=${service.id}`,
+        const rows = await api<Array<{ id: number; direction: Direction; amount: string; fee: string; occurred_at: string; import_batch_id?: string | null; import_source?: string | null }>>(
+          `/service-transactions?service_id=${service.id}&occurred_on=${date}`,
         );
         if (!active) return;
         const inItems: OperationRow[] = [];
@@ -77,6 +77,8 @@ export function TransactionWorkspace({ service, accounts, onBack, onSaved }: Tra
             amount: String(row.amount),
             fee: String(row.fee ?? ''),
             status: 'saved' as const,
+            import_batch_id: row.import_batch_id ?? null,
+            import_source: row.import_source ?? null,
           };
           row.direction === 'IN' ? inItems.push(item) : outItems.push(item);
         });

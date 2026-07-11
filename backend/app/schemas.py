@@ -294,6 +294,8 @@ class ServiceTransactionCreate(BaseModel):
     solde: Decimal | None = None
     description: str | None = None
     occurred_at: datetime | None = None
+    import_batch_id: str | None = Field(default=None, max_length=120)
+    import_source: str | None = Field(default=None, max_length=120)
 
 
 class ServiceTransactionUpdate(BaseModel):

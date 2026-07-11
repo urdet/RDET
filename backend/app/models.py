@@ -113,6 +113,8 @@ class AccountTransfer(Base):
     is_paid: Mapped[bool] = mapped_column(Boolean, default=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    import_batch_id: Mapped[str | None] = mapped_column(Text)
+    import_source: Mapped[str | None] = mapped_column(Text)
     reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reversal_reason: Mapped[str | None] = mapped_column(Text)
 
@@ -269,6 +271,8 @@ class ServiceTransaction(Base):
     description: Mapped[str | None] = mapped_column(Text)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    import_batch_id: Mapped[str | None] = mapped_column(Text)
+    import_source: Mapped[str | None] = mapped_column(Text)
     reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
