@@ -5057,14 +5057,14 @@ body,
 
 .accounts-kpi-grid,
 .expense-kpis {
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   gap: 8px;
 }
 
 .account-kpi-card,
 .expense-kpis div {
-  min-height: 68px;
-  padding: 10px;
+  min-height: 60px;
+  padding: 8px 10px;
   border-left: 3px solid var(--accent);
 }
 
@@ -5084,7 +5084,75 @@ body,
 .account-kpi-value,
 .expense-kpis strong {
   color: var(--text);
-  font-size: 18px;
+  font-size: 16px;
+  margin-top: 8px;
+}
+
+.accounts-kpi-section {
+  position: relative;
+}
+
+.kpi-config-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 5px;
+  position: relative;
+}
+
+.kpi-config-button {
+  border: 0;
+  padding: 3px 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.kpi-config-panel {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  z-index: 20;
+  width: min(720px, calc(100vw - 32px));
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px;
+  display: grid;
+  gap: 7px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.kpi-config-panel label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.kpi-config-panel small {
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.kpi-config-panel .kpi-formula-row {
+  display: grid;
+  grid-template-columns: auto minmax(110px, .8fr) minmax(190px, 1.5fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.kpi-formula-row input[type='text'],
+.kpi-formula-row input:not([type]) {
+  min-width: 0;
+  width: 100%;
 }
 
 .accounts-toolbar,
@@ -5101,20 +5169,20 @@ body,
 }
 
 .flow-board {
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(195px, 1fr));
   gap: 8px;
 }
 
 .compte-box {
-  min-height: 142px;
+  min-height: 126px;
 }
 
 .compte-border {
-  min-height: 142px;
+  min-height: 126px;
   border: 1px solid var(--line);
   border-top: 3px solid var(--accent);
   border-radius: 10px;
-  padding: 12px 12px 46px;
+  padding: 10px 10px 42px;
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 42%, transparent), transparent 46%),
     var(--card);

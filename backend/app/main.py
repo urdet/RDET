@@ -1790,6 +1790,9 @@ def save_accounts_screen_settings(payload: AccountsScreenSettingsIn, user: User 
     require_permission(user, db, "account-settings", "configure")
     if not user.company_id:
         raise HTTPException(status_code=400, detail="No active agency")
+    current_config = accounts_screen_settings(db, user.company_id)
+    if user.role != UserRole.admin and payload.config.get("__kpis") != current_config.get("__kpis"):
+        raise HTTPException(status_code=403, detail="Only an admin can configure KPIs")
     db.execute(
         text("""
             INSERT INTO agency_settings (company_id, key, value, updated_at)

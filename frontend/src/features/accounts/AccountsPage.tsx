@@ -40,6 +40,48 @@ type ReturnDebtOption = {
   totalRemaining: number;
 };
 
+type AccountKpiId = 'cashBalance' | 'cashReal' | 'unpaid' | 'calculatedCash' | 'totalDebit' | 'totalCredit' | 'todayDeposits';
+type AccountKpiConfig = { id: AccountKpiId; label: string; formula: string; visible: boolean };
+
+const defaultAccountKpis: AccountKpiConfig[] = [
+  { id: 'cashBalance', label: 'Balance caisse', formula: 'Caisse réelle + Factures non payées - Caisse calculée', visible: true },
+  { id: 'cashReal', label: 'Caisse réelle', formula: 'Caisse réelle', visible: true },
+  { id: 'unpaid', label: 'Factures non payées', formula: 'Factures non payées', visible: true },
+  { id: 'calculatedCash', label: 'Caisse calculée', formula: 'Caisse calculée', visible: true },
+  { id: 'totalDebit', label: 'Total débit', formula: 'Total débit', visible: false },
+  { id: 'totalCredit', label: 'Total crédit', formula: 'Total crédit', visible: false },
+  { id: 'todayDeposits', label: 'Versements du jour', formula: 'Versements du jour', visible: false },
+];
+
+function validKpisOrDefault(value: unknown): AccountKpiConfig[] {
+  if (!Array.isArray(value)) return defaultAccountKpis;
+  const legacyIds = value.filter((item): item is AccountKpiId => typeof item === 'string' && defaultAccountKpis.some((option) => option.id === item));
+  if (legacyIds.length) return defaultAccountKpis.map((item) => ({ ...item, visible: legacyIds.includes(item.id) }));
+  const saved = new Map(value.filter((item): item is Partial<AccountKpiConfig> & { id: AccountKpiId } => Boolean(item && typeof item === 'object' && defaultAccountKpis.some((option) => option.id === (item as AccountKpiConfig).id))).map((item) => [item.id, item]));
+  return defaultAccountKpis.map((fallback) => {
+    const item = saved.get(fallback.id);
+    return { id: fallback.id, label: typeof item?.label === 'string' ? item.label : fallback.label, formula: typeof item?.formula === 'string' ? item.formula : fallback.formula, visible: typeof item?.visible === 'boolean' ? item.visible : fallback.visible };
+  });
+}
+
+function evaluateKpiFormula(formula: string, accounts: Account[], dashboard: Dashboard | null): number | null {
+  const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const variables: Record<string, number> = {
+    'caisse reelle': Number(dashboard?.cash_real ?? 0), 'factures non payees': Number(dashboard?.unpaid_total ?? 0),
+    'non paye': Number(dashboard?.unpaid_total ?? 0), 'caisse calculee': Number(dashboard?.total_balance ?? 0),
+    'solde total': Number(dashboard?.total_balance ?? 0), 'total debit': Number(dashboard?.total_debit ?? 0),
+    'total credit': Number(dashboard?.total_credit ?? 0), 'versements du jour': Number(dashboard?.service_in ?? 0),
+    'retraits du jour': Number(dashboard?.service_out ?? 0), frais: Number(dashboard?.fees ?? 0),
+  };
+  accounts.forEach((account) => { variables[normalize(account.name)] = Number(account.balance ?? 0); });
+  let expression = normalize(formula).replace(/\{([^}]+)\}/g, '$1');
+  Object.entries(variables).sort(([a], [b]) => b.length - a.length).forEach(([name, value]) => {
+    expression = expression.replace(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), `(${value})`);
+  });
+  if (!/^[\d+\-*/().\s]+$/.test(expression)) return null;
+  try { const result = Function(`"use strict"; return (${expression});`)(); return Number.isFinite(result) ? result : null; } catch { return null; }
+}
+
 const accountOrderStorageKey = 'rdet_accounts_order';
 
 export function AccountsPage({ accounts, dashboard, currentUser, language, onRefresh, onNavigate }: AccountsPageProps) {
@@ -94,6 +136,8 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
   const [returnReceiverAccounts, setReturnReceiverAccounts] = useState<Account[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [kpiConfigs, setKpiConfigs] = useState<AccountKpiConfig[]>(defaultAccountKpis);
+  const [kpiSettingsOpen, setKpiSettingsOpen] = useState(false);
 
   const orderedAccounts = useMemo(() => {
     const orderIndex = new Map(accountOrder.map((accountId, index) => [accountId, index]));
@@ -119,6 +163,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
   const selectedContributionAccount = accounts.find((account) => String(account.id) === contributionAccountId) ?? accounts[0];
   const canCreateAccount = can(currentUser, appSettings, 'accounts', 'create');
   const canConfigureCards = can(currentUser, appSettings, 'account-settings', 'configure');
+  const canConfigureKpis = currentUser?.role === 'Admin';
   const canChangeBalance = can(currentUser, appSettings, 'accounts', 'changeBalance');
   const canOpenDetails = can(currentUser, appSettings, 'accounts', 'open');
   const canUseAccountActions = can(currentUser, appSettings, 'accounts', 'accountAction');
@@ -173,12 +218,14 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
     getAccountsScreenSettings<AccountCardConfigMap>()
       .then((serverConfigs) => {
         const savedOrder = (serverConfigs as unknown as { __accountOrder?: unknown })?.__accountOrder;
+        const savedKpis = (serverConfigs as unknown as { __kpis?: unknown })?.__kpis;
+        if (Array.isArray(savedKpis)) setKpiConfigs(validKpisOrDefault(savedKpis));
         if (Array.isArray(savedOrder)) {
           const cleanOrder = savedOrder.map(String);
           setAccountOrder(cleanOrder);
           localStorage.setItem(accountOrderStorageKey, JSON.stringify(cleanOrder));
         }
-        const accountConfigs = Object.fromEntries(Object.entries(serverConfigs ?? {}).filter(([key]) => key !== '__accountOrder')) as AccountCardConfigMap;
+        const accountConfigs = Object.fromEntries(Object.entries(serverConfigs ?? {}).filter(([key]) => key !== '__accountOrder' && key !== '__kpis')) as AccountCardConfigMap;
         if (accountConfigs && Object.keys(accountConfigs).length) {
           const legacy = accountConfigs as unknown as { buttons?: unknown; popups?: unknown };
           const normalized = legacy.buttons || legacy.popups
@@ -186,9 +233,9 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
             : Object.fromEntries(Object.entries(accountConfigs).map(([accountId, accountConfig]) => [accountId, normalizeAccountCardConfig(accountConfig)]));
           setConfigs(normalized);
           saveAccountCardConfigs(normalized);
-          if (legacy.buttons || legacy.popups) saveAccountsScreenSettings({ ...normalized, __accountOrder: savedOrder ?? accountOrder } as unknown as AccountCardConfigMap).catch(() => undefined);
+          if (legacy.buttons || legacy.popups) saveAccountsScreenSettings({ ...normalized, __accountOrder: savedOrder ?? accountOrder, __kpis: validKpisOrDefault(savedKpis) } as unknown as AccountCardConfigMap).catch(() => undefined);
         } else {
-          saveAccountsScreenSettings({ ...configs, __accountOrder: accountOrder } as unknown as AccountCardConfigMap).catch(() => undefined);
+          saveAccountsScreenSettings({ ...configs, __accountOrder: accountOrder, __kpis: validKpisOrDefault(savedKpis) } as unknown as AccountCardConfigMap).catch(() => undefined);
         }
       })
       .catch(() => undefined);
@@ -367,7 +414,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
     setSaving(true);
     setError('');
     try {
-      await saveAccountsScreenSettings({ ...configs, __accountOrder: cleanOrder } as unknown as AccountCardConfigMap);
+      await saveAccountsScreenSettings({ ...configs, __accountOrder: cleanOrder, __kpis: kpiConfigs } as unknown as AccountCardConfigMap);
       localStorage.setItem(accountOrderStorageKey, JSON.stringify(cleanOrder));
       setOrderDirty(false);
     } catch (err) {
@@ -375,6 +422,12 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
     } finally {
       setSaving(false);
     }
+  }
+
+  async function saveKpiConfigs(next: AccountKpiConfig[]) {
+    if (!canConfigureKpis || !next.some((item) => item.visible)) return;
+    setKpiConfigs(next);
+    await saveAccountsScreenSettings({ ...configs, __accountOrder: accountOrder, __kpis: next } as unknown as AccountCardConfigMap).catch(() => undefined);
   }
 
   async function submitAccountAction() {
@@ -576,12 +629,38 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
 
   return (
     <div className="space-y-4">
-      <div className="accounts-kpi-grid">
-        <KpiCard icon={Landmark} label={t('totalBalance')} value={money(dashboard?.total_balance ?? 0)} />
-        <KpiCard icon={TrendingUp} label={t('debitTotal')} value={money(dashboard?.total_debit ?? 0)} />
-        <KpiCard icon={TrendingDown} label={t('creditTotal')} value={money(dashboard?.total_credit ?? 0)} />
-        <KpiCard icon={TrendingUp} label={t('todayDeposits')} value={money(dashboard?.service_in ?? 0)} />
-        <KpiCard icon={Banknote} label={t('unpaid')} value={money(dashboard?.unpaid_total ?? 0)} />
+      <div className="accounts-kpi-section">
+        <div className="accounts-kpi-grid">
+          {kpiConfigs.filter((item) => item.visible).map((item) => {
+            const icon = item.id === 'unpaid' ? Banknote : item.id === 'totalDebit' || item.id === 'todayDeposits' ? TrendingUp : item.id === 'totalCredit' ? TrendingDown : Landmark;
+            const value = evaluateKpiFormula(item.formula, accounts, dashboard);
+            return <KpiCard key={item.id} icon={icon} label={item.label} value={value === null ? '#FORMULA' : money(value)} />;
+          })}
+        </div>
+        {canConfigureKpis && (
+          <div className="kpi-config-wrap">
+            <button type="button" className="kpi-config-button" onClick={() => setKpiSettingsOpen((open) => !open)} aria-expanded={kpiSettingsOpen}>
+              <Settings2 className="h-4 w-4" /> Configurer les KPI
+            </button>
+            {kpiSettingsOpen && (
+              <div className="kpi-config-panel">
+                <strong>Indicateurs et formules</strong>
+                {kpiConfigs.map((item) => (
+                  <label key={item.id} className="kpi-formula-row">
+                    <input type="checkbox" checked={item.visible} onChange={() => saveKpiConfigs(kpiConfigs.map((current) => current.id === item.id ? { ...current, visible: !current.visible } : current))} />
+                    <input value={item.label} aria-label="Nom du KPI" onChange={(event) => setKpiConfigs(kpiConfigs.map((current) => current.id === item.id ? { ...current, label: event.target.value } : current))} onBlur={() => saveKpiConfigs(kpiConfigs)} />
+                    <input value={item.formula} aria-label={`Formule ${item.label}`} onChange={(event) => setKpiConfigs(kpiConfigs.map((current) => current.id === item.id ? { ...current, formula: event.target.value } : current))} onBlur={() => saveKpiConfigs(kpiConfigs)} />
+                  </label>
+                ))}
+                <small>
+                  Variables générales : Caisse réelle, Factures non payées, Caisse calculée, Solde total, Total débit, Total crédit, Versements du jour, Retraits du jour, Frais.
+                  {' '}Comptes : {accounts.length ? accounts.map((account) => account.name).join(', ') : 'Aucun compte'}.
+                  {' '}Opérateurs : + − * / ( ).
+                </small>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="accounts-toolbar">
