@@ -296,6 +296,7 @@ class AgencyLedgerEntry(Base):
     description: Mapped[str | None] = mapped_column(Text)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class UnpaidItem(Base):

@@ -1,9 +1,9 @@
-import { ArrowLeftRight, ClipboardList, ExternalLink, EyeOff, Landmark, MoreVertical, Receipt, RotateCw, WalletCards } from 'lucide-react';
+import { ArrowLeftRight, ClipboardList, ExternalLink, EyeOff, Landmark, MoreVertical, Receipt, RotateCw, Trash2, WalletCards } from 'lucide-react';
 import { useState } from 'react';
 import { tr } from '../../i18n';
 import { Account } from '../../types';
 import { arAccountName, arActionLabel } from '../../utils/arabic';
-import { money } from '../../utils/format';
+import { accountBalance } from '../../utils/format';
 import { AccountActionSlot, AccountButtonWidget } from './accountCardConfig';
 
 type CompteBoxProps = {
@@ -14,6 +14,7 @@ type CompteBoxProps = {
   onAction?: (action: AccountActionSlot) => void;
   onOpen?: () => void;
   onDetails?: () => void;
+  onDelete?: () => void;
 };
 
 const actionIcons = {
@@ -36,15 +37,14 @@ function ActionButton({ button, onAction }: { button: AccountButtonWidget; onAct
     </button>
   );
 }
-
-export function CompteBox({ account, texts = [], buttons = [], showAction = true, onAction, onOpen, onDetails }: CompteBoxProps) {
+export function CompteBox({ account, texts = [], buttons = [], showAction = true, onAction, onOpen, onDetails, onDelete }: CompteBoxProps) {
   const visibleButtons = buttons.filter((button) => button.visible && button.action !== 'hidden').sort((a, b) => a.position - b.position).slice(0, 2);
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
     <div className={`compte-box ${onOpen ? 'clickable' : ''}`} onClick={onOpen}>
       <div className="compte-border">
-        {onDetails && (
+        {(onDetails || onDelete) && (
           <div className="compte-menu-wrap">
             <button
               className="compte-menu-button"
@@ -59,7 +59,7 @@ export function CompteBox({ account, texts = [], buttons = [], showAction = true
             </button>
             {menuOpen && (
               <div className="compte-menu">
-                <button
+                {onDetails && <button
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -68,13 +68,24 @@ export function CompteBox({ account, texts = [], buttons = [], showAction = true
                   }}
                 >
                   {tr('details')}
-                </button>
+                </button>}
+                {onDelete && <button
+                  type="button"
+                  className="danger"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setMenuOpen(false);
+                    onDelete();
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" /> Supprimer
+                </button>}
               </div>
             )}
           </div>
         )}
         <div className="compte-name">{arAccountName(account.name)}</div>
-        <div className="compte-solde">{money(account.balance)}</div>
+        <div className="compte-solde">{accountBalance(account.balance)}</div>
         {showAction && (
           <div className="compte-actions-row">
             {visibleButtons[0] ? <ActionButton button={visibleButtons[0]} onAction={onAction} /> : <span className="compte-action-placeholder" />}

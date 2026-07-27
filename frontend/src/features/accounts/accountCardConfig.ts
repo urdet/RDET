@@ -1,4 +1,5 @@
 import { Account, Dashboard, ScreenId, UserRole } from '../../types';
+import { accountBalance } from '../../utils/format';
 
 export type AccountActionSlot = 'hidden' | 'versement' | 'transfer' | 'cash' | 'unpaid' | 'transactions' | 'refresh' | ScreenId;
 
@@ -179,6 +180,7 @@ export const actionSlotOptions: Array<{ value: AccountActionSlot; label: string 
 export const formulaMetrics = [
   'Solde compte',
   'Ancien solde',
+  'Solde hier',
   'Last change date',
   'Date maj',
   'Caisse calculée',
@@ -340,6 +342,7 @@ function metricContext(account: Account, dashboard: Dashboard | null): Record<st
   const context: Record<string, number | string> = {
     'solde compte': Number(account.balance || 0),
     'ancien solde': Number(account.previous_balance ?? account.balance ?? 0),
+    'solde hier': Number(account.yesterday_balance ?? account.balance ?? 0),
     'last change date': new Date(account.updated_at).toLocaleDateString(),
     'caisse calculee': Number(dashboard?.total_balance || 0),
     'caisse reel': Number(dashboard?.cash_real || 0),
@@ -398,5 +401,5 @@ function escapeRegExp(value: string) {
 }
 
 function formatFormulaValue(value: number) {
-  return value.toLocaleString('fr-MA', { maximumFractionDigits: 2 });
+  return accountBalance(value);
 }

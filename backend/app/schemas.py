@@ -92,6 +92,7 @@ class AccountOut(BaseModel):
     name: str
     balance: Decimal
     previous_balance: Decimal | None = None
+    yesterday_balance: Decimal | None = None
     debit_total: Decimal = 0
     credit_total: Decimal = 0
     normal_balance_side: str = "debit"
@@ -308,6 +309,13 @@ class CashCountIn(BaseModel):
     counts: dict[Decimal, int]
 
 
+class CashAdjustmentIn(BaseModel):
+    counter_name: str = Field(min_length=1, max_length=80)
+    direction: str = Field(pattern=r"^[+-]$")
+    amount: Decimal = Field(gt=0)
+    note: str | None = Field(default=None, max_length=240)
+
+
 class AgencyLedgerEntryIn(BaseModel):
     kind: str = Field(pattern=r"^(expense|income)$")
     category: str = Field(min_length=1, max_length=120)
@@ -319,6 +327,7 @@ class AgencyLedgerEntryIn(BaseModel):
 class AgencyLedgerEntryOut(AgencyLedgerEntryIn):
     id: int
     created_by: int | None = None
+    locked: bool = False
 
     model_config = {"from_attributes": True}
 

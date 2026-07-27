@@ -506,6 +506,13 @@ def save_cash_count(db: Session, payload, user: User) -> dict[str, Decimal]:
     for denomination, quantity in payload.counts.items():
         total += Decimal(denomination) * quantity
         db.add(CashCount(counted_on=payload.counted_on, denomination=denomination, quantity=quantity, created_by=user.id))
+    if user.company_id:
+        adjustment_total = db.execute(text("""
+            SELECT COALESCE(SUM(CASE WHEN direction = '+' THEN amount ELSE -amount END), 0)
+            FROM cash_adjustment_entries
+            WHERE company_id = :company_id
+        """), {"company_id": user.company_id}).scalar()
+        total += Decimal(adjustment_total or 0)
     settings = db.execute(
         text("SELECT value FROM agency_settings WHERE company_id = :company_id AND key = 'app_settings'"),
         {"company_id": user.company_id},
@@ -551,6 +558,13 @@ def dashboard_summary(db: Session, company_id: int | None = None, hidden_account
     cash_real = db.scalar(
         select(func.coalesce(func.sum(CashCount.denomination * CashCount.quantity), 0)).where(CashCount.counted_on == today)
     )
+    if company_id:
+        adjustment_total = db.execute(text("""
+            SELECT COALESCE(SUM(CASE WHEN direction = '+' THEN amount ELSE -amount END), 0)
+            FROM cash_adjustment_entries
+            WHERE company_id = :company_id
+        """), {"company_id": company_id}).scalar()
+        cash_real = Decimal(cash_real or 0) + Decimal(adjustment_total or 0)
     return {
         "total_balance": total_balance,
         "total_debit": total_debit,

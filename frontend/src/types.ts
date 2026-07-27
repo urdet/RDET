@@ -25,6 +25,7 @@ export type Account = {
   name: string;
   balance: string;
   previous_balance: string | null;
+  yesterday_balance: string | null;
   debit_total: string;
   credit_total: string;
   normal_balance_side: 'debit' | 'credit';
@@ -281,11 +282,31 @@ export type AgencyLedgerEntry = {
   description: string | null;
   occurred_at: string;
   created_by: number | null;
+  locked: boolean;
 };
 
 export type AppSettings = {
   cashAccountId: string;
   unpaidAccountId: string;
+  reportCompany?: {
+    logo?: string;
+    name?: string;
+    address?: string;
+    city?: string;
+    phone?: string;
+    email?: string;
+    taxId?: string;
+    ice?: string;
+    rc?: string;
+    website?: string;
+  };
+  reportSections?: {
+    transactions?: boolean;
+    alimentations?: boolean;
+    accounts?: boolean;
+    balances?: boolean;
+    cash?: boolean;
+  };
   aiProvider?: 'openai' | 'google_gemini';
   importMode?: 'ai' | 'manual';
   openaiApiKey?: string;

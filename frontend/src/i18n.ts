@@ -71,7 +71,7 @@ export const screenLabels: Record<Language, Record<ScreenId, string>> = {
     services: 'Services',
     'account-workflows': 'Account actions',
     'transaction-workflows': 'Transaction workflows',
-    cash: 'Cash',
+    cash: 'Cash and unpaid',
     users: 'Users',
   },
   fr: {
@@ -88,7 +88,7 @@ export const screenLabels: Record<Language, Record<ScreenId, string>> = {
     services: 'Services',
     'account-workflows': 'Actions comptes',
     'transaction-workflows': 'Workflows transactions',
-    cash: 'Caisse',
+    cash: 'Caisse et non payée',
     users: 'Utilisateurs',
   },
   ar: {

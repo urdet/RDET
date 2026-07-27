@@ -1,4 +1,4 @@
-import { Calculator, ClipboardList, History, Minus, Plus, Save, X } from 'lucide-react';
+import { Calculator, ClipboardList, History, Minus, Plus, Save, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { api, getAppSettings } from '../../api';
 import { CircleButton } from '../../shared/ui/CircleButton';
@@ -17,6 +17,9 @@ type ContributorCard = {
   entries: Array<AccountContributionEntry & { contribution: TransferContribution; signedAmount: number }>;
 };
 
+type CashAdjustmentEntry = { id: number; counter_name: string; direction: '+' | '-'; amount: string; note: string | null; created_at: string };
+type CashAdjustments = { counters: Array<{ name: string; total: string }>; entries: CashAdjustmentEntry[] };
+
 export function CashPage({ accounts, onSaved }: CashPageProps) {
   const denominations = ['10000', '1000', '200', '100', '50', '20', '10', '5', '2', '1', '0.5'];
   const [activeTab, setActiveTab] = useState<'cash' | 'unpaid'>('cash');
@@ -32,7 +35,16 @@ export function CashPage({ accounts, onSaved }: CashPageProps) {
   const [historyPerson, setHistoryPerson] = useState<ContributorCard | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const total = denominations.reduce((sum, item) => sum + Number(item) * Number(counts[item] || 0), 0);
+  const [cashAdjustments, setCashAdjustments] = useState<CashAdjustments>({ counters: [], entries: [] });
+  const [adjustmentCounter, setAdjustmentCounter] = useState('');
+  const [adjustmentDirection, setAdjustmentDirection] = useState<'+' | '-'>('+');
+  const [adjustmentAmount, setAdjustmentAmount] = useState('');
+  const [adjustmentNote, setAdjustmentNote] = useState('');
+  const [adjustmentOpen, setAdjustmentOpen] = useState(false);
+  const [adjustmentHistory, setAdjustmentHistory] = useState('');
+  const denominationTotal = denominations.reduce((sum, item) => sum + Number(item) * Number(counts[item] || 0), 0);
+  const adjustmentTotal = cashAdjustments.counters.reduce((sum, counter) => sum + Number(counter.total || 0), 0);
+  const total = denominationTotal + adjustmentTotal;
   const cashAccount = accounts.find((account) => String(account.id) === settings.cashAccountId);
   const unpaidAccount = accounts.find((account) => String(account.id) === settings.unpaidAccountId);
   const contributorCards = useMemo(() => {
@@ -60,12 +72,59 @@ export function CashPage({ accounts, onSaved }: CashPageProps) {
 
   useEffect(() => {
     loadTodayCashCounts();
+    loadCashAdjustments();
   }, []);
 
   async function loadTodayCashCounts() {
     const today = todayInputValue();
     const value = await api<{ counts: Record<string, number> }>(`/cash-counts/${today}`).catch(() => ({ counts: {} }));
     setCounts(Object.fromEntries(Object.entries(value.counts ?? {}).map(([key, count]) => [key, String(count)])));
+  }
+
+  async function loadCashAdjustments() {
+    const value = await api<CashAdjustments>('/cash-adjustments').catch(() => ({ counters: [{ name: 'Caisse 2', total: '0' }], entries: [] }));
+    setCashAdjustments(value);
+  }
+
+  function openCashAdjustment(name: string, direction: '+' | '-') {
+    setAdjustmentCounter(name);
+    setAdjustmentDirection(direction);
+    setAdjustmentAmount('');
+    setAdjustmentNote('');
+    setError('');
+    setAdjustmentOpen(true);
+  }
+
+  async function saveCashAdjustment() {
+    if (!adjustmentCounter.trim() || Number(adjustmentAmount) <= 0) {
+      setError('Saisir un nom et un montant valide.');
+      return;
+    }
+    try {
+      await api('/cash-adjustments', {
+        method: 'POST',
+        body: JSON.stringify({ counter_name: adjustmentCounter.trim(), direction: adjustmentDirection, amount: adjustmentAmount, note: adjustmentNote }),
+      });
+      setAdjustmentOpen(false);
+      await loadCashAdjustments();
+      await onSaved();
+      setMessage(`${adjustmentCounter} mise à jour.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Opération impossible.');
+    }
+  }
+
+  async function deleteCashAdjustment(name: string) {
+    if (!window.confirm(`Supprimer ${name} et tout son historique ?`)) return;
+    setError('');
+    try {
+      await api(`/cash-adjustments/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      await loadCashAdjustments();
+      await onSaved();
+      setMessage(`${name} supprimée.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Suppression impossible.');
+    }
   }
 
   useEffect(() => {
@@ -170,15 +229,15 @@ export function CashPage({ accounts, onSaved }: CashPageProps) {
   }
 
   return (
-    <Panel title="Caisse" icon={Calculator}>
+    <Panel title="Caisse et non payée" icon={Calculator}>
       <div className="cash-tabs">
         <button className={activeTab === 'cash' ? 'active' : ''} type="button" onClick={() => setActiveTab('cash')}>
           <Calculator className="h-4 w-4" />
-          <span>Caisse</span>
+          <span>Détail</span>
         </button>
         <button className={activeTab === 'unpaid' ? 'active' : ''} type="button" onClick={() => setActiveTab('unpaid')}>
           <ClipboardList className="h-4 w-4" />
-          <span>Non paye details</span>
+          <span>Non payée</span>
         </button>
       </div>
 
@@ -200,6 +259,26 @@ export function CashPage({ accounts, onSaved }: CashPageProps) {
               </label>
             ))}
           </div>
+          <section className="cash-adjustments-section">
+            <div className="config-section-header">
+              <h3>Ajustements</h3>
+              <button className="settings-small-action" type="button" onClick={() => openCashAdjustment(`Caisse ${cashAdjustments.counters.length + 2}`, '+')}><Plus className="h-4 w-4" /> Ajouter</button>
+            </div>
+            <div className="cash-adjustment-grid">
+              {cashAdjustments.counters.map((counter) => (
+                <article className="cash-adjustment-card" key={counter.name}>
+                  <button className="cash-adjustment-main" type="button" onClick={() => setAdjustmentHistory(counter.name)}>
+                    <strong>{counter.name}</strong>
+                    <b>{money(counter.total)}</b>
+                  </button>
+                  <button className="mini-action add" title="Ajouter" type="button" onClick={() => openCashAdjustment(counter.name, '+')}><Plus className="h-4 w-4" /></button>
+                  <button className="mini-action out" title="Retirer" type="button" onClick={() => openCashAdjustment(counter.name, '-')}><Minus className="h-4 w-4" /></button>
+                  <CircleButton title="Historique" icon={History} onClick={() => setAdjustmentHistory(counter.name)} />
+                  <button className="mini-action delete" title="Supprimer" type="button" onClick={() => deleteCashAdjustment(counter.name)}><Trash2 className="h-4 w-4" /></button>
+                </article>
+              ))}
+            </div>
+          </section>
         </form>
       )}
 
@@ -315,6 +394,52 @@ export function CashPage({ accounts, onSaved }: CashPageProps) {
                     </div>
                   ))}
                   {!historyPerson.entries.length && <div className="empty-service-state">Aucun historique.</div>}
+                </div>
+              </div>
+            </Panel>
+          </div>
+        </div>
+      )}
+
+      {adjustmentOpen && (
+        <div className="account-modal-backdrop" role="presentation">
+          <div className="account-modal" role="dialog" aria-modal="true" aria-label="Mouvement caisse">
+            <Panel title={`${adjustmentDirection === '+' ? 'Ajouter à' : 'Retirer de'} ${adjustmentCounter}`} icon={adjustmentDirection === '+' ? Plus : Minus}>
+              <div className="transfer-panel">
+                <div className="transfer-panel-header modal-close-only">
+                  <button className="circle-action" title="Fermer" onClick={() => setAdjustmentOpen(false)}><X className="h-4 w-4" /></button>
+                </div>
+                <label className="form-field">Nom<input value={adjustmentCounter} onChange={(event) => setAdjustmentCounter(event.target.value)} /></label>
+                <label className="form-field">Montant<input value={adjustmentAmount} inputMode="decimal" onChange={(event) => setAdjustmentAmount(event.target.value)} placeholder="0.00" /></label>
+                <label className="form-field">Note<input value={adjustmentNote} onChange={(event) => setAdjustmentNote(event.target.value)} /></label>
+                {error && <div className="transfer-error">{error}</div>}
+                <div className="modal-actions">
+                  <button className="modal-cancel" type="button" onClick={() => setAdjustmentOpen(false)}>Annuler</button>
+                  <button className="transfer-submit" type="button" onClick={saveCashAdjustment}>Valider</button>
+                </div>
+              </div>
+            </Panel>
+          </div>
+        </div>
+      )}
+
+      {adjustmentHistory && (
+        <div className="account-modal-backdrop" role="presentation">
+          <div className="account-modal" role="dialog" aria-modal="true" aria-label={`Historique ${adjustmentHistory}`}>
+            <Panel title={`Historique ${adjustmentHistory}`} icon={History}>
+              <div className="transfer-panel">
+                <div className="transfer-panel-header modal-close-only">
+                  <button className="circle-action" title="Fermer" onClick={() => setAdjustmentHistory('')}><X className="h-4 w-4" /></button>
+                </div>
+                <div className="unpaid-history-list">
+                  {cashAdjustments.entries.filter((row) => row.counter_name === adjustmentHistory).map((row) => (
+                    <div className={`unpaid-history-row ${row.direction === '+' ? 'add' : 'out'}`} key={row.id}>
+                      <span>{new Date(row.created_at).toLocaleString()}</span>
+                      <small>{row.note || 'Mouvement'}</small>
+                      <strong>{row.direction}{money(row.amount)}</strong>
+                    </div>
+                  ))}
+                  {!cashAdjustments.entries.some((row) => row.counter_name === adjustmentHistory) && <div className="empty-service-state">Aucun historique.</div>}
                 </div>
               </div>
             </Panel>

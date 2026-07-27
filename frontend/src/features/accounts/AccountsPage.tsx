@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowRightLeft, Banknote, ChevronDown, History, Landmark, Minus, Plus, RefreshCw, Save, Search, Send, Settings2, TrendingDown, TrendingUp, X, type LucideIcon } from 'lucide-react';
-import { acceptInterAgencySettlement, acceptInterAgencyTransfer, api, cancelInterAgencyTransfer, createAccount, createInterAgencySettlement, createInterAgencyTransfer, getAccountContributions, getAccountsScreenSettings, getAppSettings, listAgencyAccounts, listAgencyTransferRules, listInterAgencySettlements, listInterAgencyTransfers, saveAccountsScreenSettings, updateAccountBalance } from '../../api';
+import { ArrowDownToLine, ArrowRightLeft, Banknote, ChevronDown, History, Landmark, Minus, Plus, RefreshCw, Save, Send, Settings2, TrendingDown, TrendingUp, X, type LucideIcon } from 'lucide-react';
+import { acceptInterAgencySettlement, acceptInterAgencyTransfer, api, cancelInterAgencyTransfer, createAccount, createInterAgencySettlement, createInterAgencyTransfer, getAccountContributions, getAccountsScreenSettings, getAppSettings, listAgencyAccounts, listAgencyTransferRules, listInterAgencySettlements, listInterAgencyTransfers, removeAccount, saveAccountsScreenSettings, updateAccountBalance } from '../../api';
 import { Language, tr } from '../../i18n';
 import { can } from '../../permissions';
 import { CircleButton } from '../../shared/ui/CircleButton';
@@ -86,7 +86,6 @@ const accountOrderStorageKey = 'rdet_accounts_order';
 
 export function AccountsPage({ accounts, dashboard, currentUser, language, onRefresh, onNavigate }: AccountsPageProps) {
   const t = (key: string) => tr(key, language);
-  const [query, setQuery] = useState('');
   const [configs, setConfigs] = useState<AccountCardConfigMap>(() => loadAccountCardConfigs());
   const [appSettings, setAppSettings] = useState<Partial<AppSettings>>({});
   const [accountOrder, setAccountOrder] = useState<string[]>(() => {
@@ -151,12 +150,6 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
     });
   }, [accounts, accountOrder]);
 
-  const filteredAccounts = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return orderedAccounts;
-    return orderedAccounts.filter((account) => account.name.toLowerCase().includes(normalized) || String(account.legacy_id ?? account.id).includes(normalized));
-  }, [orderedAccounts, query]);
-
   const visibleAccounts = accounts.filter((account) => account.visible).length;
   const positiveAccounts = accounts.filter((account) => Number(account.balance) >= 0).length;
   const transferTargets = accounts.filter((account) => String(account.id) !== sourceAccountId);
@@ -166,6 +159,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
   const canConfigureKpis = currentUser?.role === 'Admin';
   const canChangeBalance = can(currentUser, appSettings, 'accounts', 'changeBalance');
   const canOpenDetails = can(currentUser, appSettings, 'accounts', 'open');
+  const canDeleteAccount = can(currentUser, appSettings, 'accounts', 'delete');
   const canUseAccountActions = can(currentUser, appSettings, 'accounts', 'accountAction');
   const canUseTransfer = can(currentUser, appSettings, 'accounts', 'transfer');
   const canUseMovement = can(currentUser, appSettings, 'accounts', 'movement');
@@ -393,6 +387,25 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
     setDetailsRows([]);
     const rows = await api<AccountMovementEntry[]>(`/accounts/${account.id}/movements`).catch(() => []);
     setDetailsRows(rows);
+  }
+
+  async function deleteAccount(account: Account) {
+    const confirmed = window.confirm(`Supprimer le compte « ${arAccountName(account.name)} » de cette agence ? Son historique financier sera conservé.`);
+    if (!confirmed) return;
+    setError('');
+    try {
+      await removeAccount(account.id);
+      const nextOrder = accountOrder.filter((accountId) => accountId !== String(account.id));
+      const nextConfigs = Object.fromEntries(Object.entries(configs).filter(([accountId]) => accountId !== String(account.id))) as AccountCardConfigMap;
+      setAccountOrder(nextOrder);
+      setConfigs(nextConfigs);
+      localStorage.setItem(accountOrderStorageKey, JSON.stringify(nextOrder));
+      saveAccountCardConfigs(nextConfigs);
+      await saveAccountsScreenSettings({ ...nextConfigs, __accountOrder: nextOrder, __kpis: kpiConfigs } as unknown as AccountCardConfigMap);
+      await onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Suppression du compte impossible.');
+    }
   }
 
   function reorderAccounts(sourceId: string, targetId: string) {
@@ -664,12 +677,8 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
       </div>
 
       <div className="accounts-toolbar">
-        <label className="account-search">
-          <Search className="h-4 w-4" />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('accountSearch')} />
-        </label>
         <div className="account-toolbar-actions">
-          <div className="account-count">{filteredAccounts.length} {t('accountsCount')}, {visibleAccounts} {t('visible')}, {positiveAccounts} {t('positive')}</div>
+          <div className="account-count">{orderedAccounts.length} {t('accountsCount')}, {visibleAccounts} {t('visible')}, {positiveAccounts} {t('positive')}</div>
           {canUseTransfer && <CircleButton title={t('interAgencyTransfers')} icon={Send} onClick={() => { setError(''); setInterAgencyMode(activeInterAgencyRules.length ? 'send' : 'return'); setInterAgencyOpen(true); setInterAgencyRuleId(activeInterAgencyRules[0] ? String(activeInterAgencyRules[0].id) : ''); setReturnTransferId(returnableTransfers[0] ? String(returnableTransfers[0].id) : ''); }} />}
           {canCreateAccount && <CircleButton title={t('createAccount')} icon={Plus} onClick={() => { setError(''); setCreatingAccount(true); }} />}
           {orderDirty && <CircleButton title={t('saveOrder')} icon={Save} onClick={saveAccountOrder} />}
@@ -733,13 +742,13 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
       )}
 
       <div className="flow-board">
-        {filteredAccounts.map((account) => {
+        {orderedAccounts.map((account) => {
           const config = getAccountCardConfig(configs, account.id);
           return (
             <div
               key={account.id}
               className={`account-drag-wrapper ${draggingAccountId === String(account.id) ? 'dragging' : ''}`}
-              draggable={!query.trim()}
+              draggable
               onDragEnd={() => setDraggingAccountId('')}
               onDragOver={(event) => event.preventDefault()}
               onDragStart={(event) => {
@@ -766,6 +775,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
                 } : undefined}
                 onAction={(kind) => openAction(account, kind, config)}
                 onDetails={canOpenDetails ? () => openAccountDetails(account) : undefined}
+                onDelete={canDeleteAccount ? () => deleteAccount(account) : undefined}
               />
             </div>
           );
@@ -775,12 +785,12 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
       {detailsAccount && (
         <div className="account-modal-backdrop" role="presentation">
           <div className="account-modal" role="dialog" aria-modal="true" aria-label={t('accountDetails')}>
-            <Panel title={`${t('details')} ${arAccountName(detailsAccount.name)}`} icon={History}>
+            <Panel title={arAccountName(detailsAccount.name)} icon={History}>
               <div className="transfer-panel">
                 <div className="transfer-panel-header">
-                  <div className="history-summary-line">
-                    <div className="transfer-source">{arAccountName(detailsAccount.name)}</div>
-                    <div className="transfer-balance">{t('totalBalance')}: {money(detailsAccount.balance)} - {t('debit')} {money(detailsAccount.debit_total ?? 0)} - {t('credit')} {money(detailsAccount.credit_total ?? 0)}</div>
+                  <div className="account-details-total">
+                    <span>{t('totalBalance')}</span>
+                    <strong>{money(detailsAccount.balance)}</strong>
                   </div>
                   <button className="circle-action" title={t('close')} onClick={() => setDetailsAccount(null)}>
                     <X className="h-4 w-4" />
@@ -817,7 +827,6 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
         <div className="config-section-header">
           <div>
             <h3>{t('details')} {t('contributor')}</h3>
-            <div className="formula-help">{t('selectAccount')}</div>
           </div>
           <label className="form-field contribution-filter">
             {t('account')}
@@ -849,9 +858,9 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
             <Panel title={`${t('history')} ${historyContributor.name}`} icon={ChevronDown}>
               <div className="transfer-panel">
                 <div className="transfer-panel-header">
-                  <div className="history-summary-line">
-                    <div className="transfer-source">{historyContributor.name}</div>
-                    <div className="transfer-balance">{t('totalBalance')}: {historyContributor.total >= 0 ? '+' : '-'}{money(Math.abs(historyContributor.total))}</div>
+                  <div className="account-details-total">
+                    <span>{t('totalBalance')}</span>
+                    <strong>{historyContributor.total >= 0 ? '+' : '-'}{money(Math.abs(historyContributor.total))}</strong>
                   </div>
                   <button className="circle-action" title={t('close')} onClick={() => setHistoryContributorName('')}>
                     <X className="h-4 w-4" />
@@ -878,10 +887,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
             <Panel title={t('editBalance')} icon={Banknote}>
               <div className="transfer-panel">
                 <div className="transfer-panel-header">
-                  <div className="history-summary-line">
-                    <div className="transfer-source">{arAccountName(editingBalanceAccount.name)}</div>
-                    <div className="transfer-balance">{t('previousBalance')}: {money(editingBalanceAccount.previous_balance ?? editingBalanceAccount.balance)}</div>
-                  </div>
+                  <div className="transfer-source">{arAccountName(editingBalanceAccount.name)}</div>
                   <button className="circle-action" title={t('close')} onClick={() => !saving && setEditingBalanceAccount(null)}>
                     <X className="h-4 w-4" />
                   </button>
@@ -913,11 +919,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
           <div className="account-modal" role="dialog" aria-modal="true" aria-label={t('createAccount')}>
             <Panel title={t('createAccount')} icon={Plus}>
               <div className="transfer-panel">
-                <div className="transfer-panel-header">
-                  <div>
-                    <div className="transfer-source">{t('newAccount')}</div>
-                    <div className="transfer-balance">{t('currentAgency')}</div>
-                  </div>
+                <div className="transfer-panel-header modal-close-only">
                   <button className="circle-action" title={t('close')} onClick={() => !saving && setCreatingAccount(false)}>
                     <X className="h-4 w-4" />
                   </button>
@@ -955,11 +957,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
           <div className="account-modal" role="dialog" aria-modal="true" aria-label={t('interAgencyTransfers')}>
             <Panel title={t('interAgencyTransfers')} icon={Send}>
               <div className="transfer-panel">
-                <div className="transfer-panel-header">
-                  <div>
-                    <div className="transfer-source">{interAgencyMode === 'send' ? t('interAgencySend') : t('interAgencyReturn')}</div>
-                    <div className="transfer-balance">{interAgencyMode === 'send' ? t('pendingReceiver') : t('pendingAgency')}</div>
-                  </div>
+                <div className="transfer-panel-header modal-close-only">
                   <button className="circle-action" title={t('close')} onClick={() => !saving && setInterAgencyOpen(false)}>
                     <X className="h-4 w-4" />
                   </button>

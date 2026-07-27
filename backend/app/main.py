@@ -1,6 +1,8 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
+import unicodedata
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.encoders import jsonable_encoder
@@ -27,6 +29,7 @@ from app.schemas import (
     AgencyTransferRuleCreate,
     AgencyTransferRuleOut,
     CashCountIn,
+    CashAdjustmentIn,
     CompanyOut,
     CredentialsUpdate,
     DashboardSummary,
@@ -268,6 +271,20 @@ def ensure_multi_agency_schema() -> None:
               created_by BIGINT REFERENCES users(id)
           )
       """))
+      db.execute(text("ALTER TABLE agency_ledger_entries ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE"))
+      db.execute(text("""
+          CREATE TABLE IF NOT EXISTS cash_adjustment_entries (
+              id BIGSERIAL PRIMARY KEY,
+              company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+              counter_name TEXT NOT NULL,
+              direction TEXT NOT NULL CHECK (direction IN ('+', '-')),
+              amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+              note TEXT,
+              created_by BIGINT REFERENCES users(id),
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+      """))
+      db.execute(text("CREATE INDEX IF NOT EXISTS idx_cash_adjustments_company_date ON cash_adjustment_entries(company_id, created_at DESC)"))
       db.execute(text("""
           CREATE TABLE IF NOT EXISTS user_agencies (
               user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1915,6 +1932,30 @@ def reports(
     if user.company_id:
         query = query.where(User.company_id == user.company_id)
     rows = db.execute(query.order_by(ServiceTransaction.occurred_at.desc(), ServiceTransaction.id.desc())).all()
+    agency_accounts = list(db.scalars(select(Account).where(Account.company_ids.any(user.company_id)))) if user.company_id else list(db.scalars(select(Account)))
+    def normalized_account_name(value: str) -> str:
+        return "".join(character for character in unicodedata.normalize("NFD", value.lower()) if unicodedata.category(character) != "Mn").strip()
+    coffre = next((account for account in agency_accounts if normalized_account_name(account.name) == "coffre"), None)
+    caisse_calculee = next((account for account in agency_accounts if normalized_account_name(account.name) == "caisse calculee"), None)
+    alimentation_rows = []
+    if coffre and caisse_calculee:
+        transfers = db.scalars(
+            select(AccountTransfer).where(
+                AccountTransfer.from_account_id == coffre.id,
+                AccountTransfer.to_account_id == caisse_calculee.id,
+                func.date(AccountTransfer.occurred_at) >= from_date,
+                func.date(AccountTransfer.occurred_at) <= to_date,
+                AccountTransfer.reversed_at.is_(None),
+            ).order_by(AccountTransfer.occurred_at.desc(), AccountTransfer.id.desc())
+        ).all()
+        alimentation_rows = [{
+            "id": transfer.id,
+            "amount": transfer.amount,
+            "description": transfer.description,
+            "occurred_at": transfer.occurred_at,
+            "from_account": coffre.name,
+            "to_account": caisse_calculee.name,
+        } for transfer in transfers]
     service_totals: dict[str, dict[str, Decimal | int]] = {}
     daily_totals: dict[str, dict[str, Decimal | int]] = {}
     total_in = Decimal("0")
@@ -1962,6 +2003,7 @@ def reports(
         "by_service": [{"service": name, **values} for name, values in service_totals.items()],
         "by_day": [{"date": day, **values} for day, values in sorted(daily_totals.items())],
         "rows": items,
+        "alimentations": alimentation_rows,
     }
 
 
@@ -1999,14 +2041,55 @@ def create_agency_ledger_entry(payload: AgencyLedgerEntryIn, user: User = Depend
     return item
 
 
+def company_ledger_entry(entry_id: int, user: User, db: Session) -> AgencyLedgerEntry:
+    query = select(AgencyLedgerEntry).join(User, User.id == AgencyLedgerEntry.created_by).where(AgencyLedgerEntry.id == entry_id)
+    if user.company_id:
+        query = query.where(User.company_id == user.company_id)
+    item = db.scalar(query)
+    if not item:
+        raise HTTPException(status_code=404, detail="Ledger entry not found")
+    return item
+
+
+@app.post("/agency-ledger/{entry_id}/lock", response_model=AgencyLedgerEntryOut)
+def lock_agency_ledger_entry(entry_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> AgencyLedgerEntry:
+    item = company_ledger_entry(entry_id, user, db)
+    item.locked = True
+    write_audit(db, user, AuditArea.transaction, "update", "Agency ledger entry locked", entry_id=item.id)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.delete("/agency-ledger/{entry_id}")
+def delete_agency_ledger_entry(entry_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict[str, bool]:
+    item = company_ledger_entry(entry_id, user, db)
+    if item.locked:
+        raise HTTPException(status_code=409, detail="This entry is locked and cannot be deleted")
+    write_audit(db, user, AuditArea.transaction, "delete", "Agency ledger entry deleted", entry_id=item.id, kind=item.kind, category=item.category, amount=str(item.amount))
+    db.delete(item)
+    db.commit()
+    return {"deleted": True}
+
+
 @app.get("/accounts", response_model=list[AccountOut])
 def list_accounts(user: User = Depends(current_user), db: Session = Depends(get_db)) -> list[Account]:
     query = select(Account)
     if user.company_id:
         query = query.where(Account.company_ids.any(user.company_id))
     accounts = list(db.scalars(query.order_by(Account.legacy_id.nullslast(), Account.name)))
+    start_of_today = datetime.now(ZoneInfo("Africa/Casablanca")).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    today_changes = dict(db.execute(
+        select(AccountLedgerEntry.account_id, func.coalesce(func.sum(AccountLedgerEntry.balance_effect), 0))
+        .where(
+            AccountLedgerEntry.account_id.in_([account.id for account in accounts]),
+            AccountLedgerEntry.occurred_at >= start_of_today,
+        )
+        .group_by(AccountLedgerEntry.account_id)
+    ).all()) if accounts else {}
     for account in accounts:
         sync_account_balance(account)
+        account.yesterday_balance = account_display_balance(account) - Decimal(today_changes.get(account.id, 0))
     if user.role == UserRole.admin:
         return accounts
     hidden_ids = hidden_account_ids(db, user)
@@ -2056,6 +2139,21 @@ def update_account_balance(account_id: int, payload: AccountBalanceUpdate, user:
     db.commit()
     db.refresh(account)
     return account
+
+
+@app.delete("/accounts/{account_id}")
+def remove_account(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    require_permission(user, db, "accounts", "delete")
+    if not user.company_id:
+        raise HTTPException(status_code=400, detail="No active agency")
+    account = require_account_access(db.get(Account, account_id), user, db)
+    company_ids = [company_id for company_id in (account.company_ids or []) if company_id != user.company_id]
+    account.company_ids = company_ids
+    if not company_ids:
+        account.visible = False
+    write_audit(db, user, AuditArea.account, "delete", "Account removed from agency", account_id=account.id, account_name=account.name)
+    db.commit()
+    return {"id": account.id, "removed": True}
 
 
 @app.post("/transfers")
@@ -2439,6 +2537,86 @@ def get_cash_count(counted_on: date, _: User = Depends(current_user), db: Sessio
     counts = {cash_denomination_key(row.denomination): row.quantity for row in rows}
     total = sum((Decimal(row.denomination) * row.quantity for row in rows), Decimal("0"))
     return {"counted_on": counted_on, "counts": counts, "total": total}
+
+
+@app.get("/cash-adjustments")
+def get_cash_adjustments(user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    if not user.company_id:
+        return {"counters": [], "entries": []}
+    rows = db.execute(text("""
+        SELECT id, counter_name, direction, amount, note, created_at
+        FROM cash_adjustment_entries
+        WHERE company_id = :company_id
+        ORDER BY created_at DESC, id DESC
+        LIMIT 500
+    """), {"company_id": user.company_id}).mappings().all()
+    totals: dict[str, Decimal] = {}
+    entries = []
+    for row in rows:
+        signed = Decimal(row["amount"]) if row["direction"] == "+" else -Decimal(row["amount"])
+        totals[row["counter_name"]] = totals.get(row["counter_name"], Decimal("0")) + signed
+        entries.append(dict(row))
+    return {
+        "counters": [{"name": name, "total": total} for name, total in sorted(totals.items())],
+        "entries": entries,
+    }
+
+
+@app.post("/cash-adjustments")
+def create_cash_adjustment(payload: CashAdjustmentIn, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    if not user.company_id:
+        raise HTTPException(status_code=400, detail="No active agency")
+    row = db.execute(text("""
+        INSERT INTO cash_adjustment_entries (company_id, counter_name, direction, amount, note, created_by)
+        VALUES (:company_id, :counter_name, :direction, :amount, :note, :created_by)
+        RETURNING id, counter_name, direction, amount, note, created_at
+    """), {
+        "company_id": user.company_id,
+        "counter_name": payload.counter_name.strip(),
+        "direction": payload.direction,
+        "amount": payload.amount,
+        "note": payload.note.strip() if payload.note else None,
+        "created_by": user.id,
+    }).mappings().one()
+    settings_value = app_settings(db, user.company_id)
+    cash_account_id = settings_value.get("cashAccountId") if isinstance(settings_value, dict) else None
+    if cash_account_id:
+        try:
+            cash_account = db.get(Account, int(cash_account_id))
+        except (TypeError, ValueError):
+            cash_account = None
+        if cash_account and user.company_id in cash_account.company_ids:
+            signed_amount = Decimal(payload.amount) if payload.direction == "+" else -Decimal(payload.amount)
+            apply_balance_delta(db, cash_account, signed_amount, description=f"{payload.counter_name} adjustment", created_by=user.id)
+    db.commit()
+    return dict(row)
+
+
+@app.delete("/cash-adjustments/{counter_name}")
+def delete_cash_adjustment_counter(counter_name: str, user: User = Depends(current_user), db: Session = Depends(get_db)) -> dict:
+    if not user.company_id:
+        raise HTTPException(status_code=400, detail="No active agency")
+    name = counter_name.strip()
+    current_total = db.execute(text("""
+        SELECT COALESCE(SUM(CASE WHEN direction = '+' THEN amount ELSE -amount END), 0)
+        FROM cash_adjustment_entries
+        WHERE company_id = :company_id AND counter_name = :counter_name
+    """), {"company_id": user.company_id, "counter_name": name}).scalar()
+    deleted = db.execute(text("""
+        DELETE FROM cash_adjustment_entries
+        WHERE company_id = :company_id AND counter_name = :counter_name
+    """), {"company_id": user.company_id, "counter_name": name}).rowcount
+    settings_value = app_settings(db, user.company_id)
+    cash_account_id = settings_value.get("cashAccountId") if isinstance(settings_value, dict) else None
+    if cash_account_id and Decimal(current_total or 0) != 0:
+        try:
+            cash_account = db.get(Account, int(cash_account_id))
+        except (TypeError, ValueError):
+            cash_account = None
+        if cash_account and user.company_id in cash_account.company_ids:
+            apply_balance_delta(db, cash_account, -Decimal(current_total), description=f"{name} removed", created_by=user.id)
+    db.commit()
+    return {"counter_name": name, "deleted_entries": deleted}
 
 
 @app.get("/unpaid-items", response_model=list[UnpaidItemOut])

@@ -1,5 +1,5 @@
-import { ArrowRight, Building2, CheckCircle2, LockKeyhole, Moon, Sun, UserPlus } from 'lucide-react';
-import { FormEvent, useState } from 'react';
+import { ArrowRight, AtSign, Building2, CheckCircle2, Eye, EyeOff, LockKeyhole, Moon, Sun, User, UserPlus } from 'lucide-react';
+import { FormEvent, ReactNode, useState } from 'react';
 import { login, register } from '../../api';
 import { appName, ThemeMode } from '../../i18n';
 import { BrandLogo } from '../../shared/ui/BrandLogo';
@@ -19,6 +19,7 @@ export function LoginPage({ theme, onThemeChange, onLogin }: LoginPageProps) {
   const [agencyName, setAgencyName] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -88,7 +89,7 @@ export function LoginPage({ theme, onThemeChange, onLogin }: LoginPageProps) {
       </section>
 
       <section className="auth-form-panel">
-        <div className="auth-form-card">
+        <div className={`auth-form-card ${mode === 'register' ? 'is-register' : ''}`}>
           <div className="auth-tabs" role="tablist" aria-label="Authentication mode">
             <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => switchMode('login')}>Sign in</button>
             <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => switchMode('register')}>Create agency</button>
@@ -98,27 +99,51 @@ export function LoginPage({ theme, onThemeChange, onLogin }: LoginPageProps) {
             <div className="auth-icon">{mode === 'login' ? <LockKeyhole className="h-5 w-5" /> : <UserPlus className="h-5 w-5" />}</div>
             <div>
               <h2>{mode === 'login' ? 'Welcome back' : 'Start your agency'}</h2>
-              <p>{mode === 'login' ? 'Access your AgencyOS workspace.' : 'Create the agency and first admin user.'}</p>
+              <p>{mode === 'login' ? 'Access your AgencyOS workspace.' : 'Set up your workspace and administrator account.'}</p>
             </div>
           </div>
 
           <form onSubmit={submit} className="auth-form">
             {mode === 'register' && (
               <>
-                <AuthInput label="Agency name" value={agencyName} onChange={setAgencyName} placeholder="Atlas Services" required />
+                <div className="auth-form-section">
+                  <span>Agency information</span>
+                  <small>Your workspace name can be changed later.</small>
+                </div>
+                <AuthInput icon={<Building2 />} label="Agency name" value={agencyName} onChange={setAgencyName} placeholder="e.g. Atlas Services" autoComplete="organization" required />
+                <div className="auth-form-section">
+                  <span>Administrator</span>
+                  <small>This will be the first admin account.</small>
+                </div>
                 <div className="auth-form-grid">
-                  <AuthInput label="First name" value={firstName} onChange={setFirstName} placeholder="Sara" required />
-                  <AuthInput label="Last name" value={lastName} onChange={setLastName} placeholder="Amrani" required />
+                  <AuthInput icon={<User />} label="First name" value={firstName} onChange={setFirstName} placeholder="Sara" autoComplete="given-name" required />
+                  <AuthInput icon={<User />} label="Last name" value={lastName} onChange={setLastName} placeholder="Amrani" autoComplete="family-name" required />
                 </div>
               </>
             )}
-            <AuthInput label="Username" value={username} onChange={setUsername} placeholder="admin" required />
-            <AuthInput label="Password" value={password} onChange={setPassword} type="password" placeholder="••••••••" required />
+            <AuthInput icon={<AtSign />} label="Username" value={username} onChange={setUsername} placeholder="admin" autoComplete="username" required />
+            <AuthInput
+              icon={<LockKeyhole />}
+              label="Password"
+              value={password}
+              onChange={setPassword}
+              type={showPassword ? 'text' : 'password'}
+              placeholder="Enter your password"
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              minLength={6}
+              required
+              action={(
+                <button type="button" className="auth-password-toggle" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                  {showPassword ? <EyeOff /> : <Eye />}
+                </button>
+              )}
+            />
             {error && <div className="auth-error">{error}</div>}
             <button className="auth-submit" disabled={saving}>
               <span>{saving ? 'Please wait...' : mode === 'login' ? 'Sign in' : 'Create agency'}</span>
               <ArrowRight className="h-4 w-4" />
             </button>
+            {mode === 'register' && <p className="auth-form-note">You can invite more users after the agency is created.</p>}
           </form>
         </div>
       </section>
@@ -132,6 +157,10 @@ function AuthInput({
   onChange,
   type = 'text',
   placeholder,
+  autoComplete,
+  minLength,
+  icon,
+  action,
   required,
 }: {
   label: string;
@@ -139,12 +168,20 @@ function AuthInput({
   onChange: (value: string) => void;
   type?: string;
   placeholder?: string;
+  autoComplete?: string;
+  minLength?: number;
+  icon?: ReactNode;
+  action?: ReactNode;
   required?: boolean;
 }) {
   return (
     <label className="auth-field">
       <span>{label}</span>
-      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} />
+      <div className="auth-input-wrap">
+        {icon && <span className="auth-input-icon">{icon}</span>}
+        <input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} autoComplete={autoComplete} minLength={minLength} required={required} />
+        {action}
+      </div>
     </label>
   );
 }

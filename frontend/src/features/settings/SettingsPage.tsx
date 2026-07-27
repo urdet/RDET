@@ -19,6 +19,8 @@ const defaultSettings: AppSettings = {
   openaiImportPrompt: 'Map spreadsheet rows into service transactions. Detect IN/OUT from labels when possible. Use only positive transaction amounts. Ignore totals, balances, headings, and repeated footer rows.',
   manualImportRules: [],
   rolePermissions: {},
+  reportCompany: {},
+  reportSections: { transactions: true, alimentations: true, accounts: true, balances: true, cash: true },
 };
 
 const permissionRoles: Array<Exclude<UserRole, 'Admin'>> = ['Chef', 'User'];
@@ -75,6 +77,20 @@ export function SettingsPage({ accounts, services }: { accounts: Account[]; serv
   const [configBusy, setConfigBusy] = useState(false);
   const [importReport, setImportReport] = useState<AppConfigImportReport | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
+
+  function updateReportCompany(field: keyof NonNullable<AppSettings['reportCompany']>, value: string) {
+    setSettings((current) => ({ ...current, reportCompany: { ...(current.reportCompany ?? {}), [field]: value } }));
+    setSaved(false);
+  }
+
+  function loadReportLogo(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => updateReportCompany('logo', String(reader.result ?? ''));
+    reader.readAsDataURL(file);
+  }
 
   useEffect(() => {
     getAppSettings<Partial<AppSettings>>()
@@ -220,6 +236,29 @@ export function SettingsPage({ accounts, services }: { accounts: Account[]; serv
   return (
     <Panel title="Settings" icon={Settings2}>
       <div className="settings-layout">
+        <section className="config-section report-company-settings">
+          <div className="config-section-header">
+            <h3>Informations société pour les rapports</h3>
+          </div>
+          <div className="report-company-form">
+            <div className="report-logo-editor">
+              {settings.reportCompany?.logo ? <img src={settings.reportCompany.logo} alt="Logo société" /> : <div>Logo</div>}
+              <button type="button" className="settings-small-action" onClick={() => logoInputRef.current?.click()}>Choisir le logo</button>
+              <input ref={logoInputRef} className="hidden" type="file" accept="image/*" onChange={loadReportLogo} />
+            </div>
+            <div className="settings-grid">
+              <label className="form-field"><span>Nom</span><input value={settings.reportCompany?.name ?? ''} onChange={(event) => updateReportCompany('name', event.target.value)} /></label>
+              <label className="form-field"><span>Téléphone</span><input value={settings.reportCompany?.phone ?? ''} onChange={(event) => updateReportCompany('phone', event.target.value)} /></label>
+              <label className="form-field settings-wide"><span>Adresse</span><input value={settings.reportCompany?.address ?? ''} onChange={(event) => updateReportCompany('address', event.target.value)} /></label>
+              <label className="form-field"><span>Ville</span><input value={settings.reportCompany?.city ?? ''} onChange={(event) => updateReportCompany('city', event.target.value)} /></label>
+              <label className="form-field"><span>Email</span><input value={settings.reportCompany?.email ?? ''} onChange={(event) => updateReportCompany('email', event.target.value)} /></label>
+              <label className="form-field"><span>ICE</span><input value={settings.reportCompany?.ice ?? ''} onChange={(event) => updateReportCompany('ice', event.target.value)} /></label>
+              <label className="form-field"><span>Identifiant fiscal</span><input value={settings.reportCompany?.taxId ?? ''} onChange={(event) => updateReportCompany('taxId', event.target.value)} /></label>
+              <label className="form-field"><span>RC</span><input value={settings.reportCompany?.rc ?? ''} onChange={(event) => updateReportCompany('rc', event.target.value)} /></label>
+              <label className="form-field"><span>Site web</span><input value={settings.reportCompany?.website ?? ''} onChange={(event) => updateReportCompany('website', event.target.value)} /></label>
+            </div>
+          </div>
+        </section>
         <div className="settings-copy">
           <h2>Parametres generaux</h2>
           <p>Choisir le compte qui recoit le total calcule dans la section caisse.</p>

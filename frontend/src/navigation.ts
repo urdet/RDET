@@ -27,6 +27,6 @@ export const screens: Array<{ id: ScreenId; label: string; icon: typeof BarChart
   { id: 'services', label: 'Services', icon: BriefcaseBusiness },
   { id: 'account-workflows', label: 'Compte actions', icon: Link2 },
   { id: 'transaction-workflows', label: 'Transaction workflows', icon: GitFork },
-  { id: 'cash', label: 'Caisse', icon: Calculator },
+  { id: 'cash', label: 'Caisse et non payée', icon: Calculator },
   { id: 'users', label: 'Users', icon: Users },
 ];

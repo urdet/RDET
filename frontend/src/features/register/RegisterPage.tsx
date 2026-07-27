@@ -1,8 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useState } from 'react';
-import { FileText, Plus, Save, Search, Trash2, Upload } from 'lucide-react';
+import { FileText, FolderOpen, Plus, Save, Search, Trash2, Upload, UserRound, Users, X } from 'lucide-react';
 import { api } from '../../api';
-import { CircleButton } from '../../shared/ui/CircleButton';
-import { Panel } from '../../shared/ui/Panel';
 import { createClientId } from '../../utils/id';
 
 type ClientDocument = {
@@ -42,6 +40,7 @@ export function RegisterPage() {
   const [query, setQuery] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api<RegisterPayload>('/register-clients')
@@ -59,6 +58,9 @@ export function RegisterPage() {
     );
   }, [clients, query]);
 
+  const documentCount = useMemo(() => clients.reduce((total, client) => total + client.documents.length, 0), [clients]);
+  const isExisting = clients.some((client) => client.id === draft.id);
+
   async function persist(nextClients: RegisterClient[]) {
     setError('');
     setMessage('');
@@ -67,7 +69,6 @@ export function RegisterPage() {
       body: JSON.stringify({ config: { clients: nextClients } }),
     });
     setClients(nextClients);
-    setMessage('Register saved.');
   }
 
   async function saveDraft() {
@@ -75,94 +76,164 @@ export function RegisterPage() {
       setError('Client name is required.');
       return;
     }
+    setSaving(true);
     try {
-      const next = clients.some((client) => client.id === draft.id)
-        ? clients.map((client) => client.id === draft.id ? draft : client)
-        : [{ ...draft, name: draft.name.trim() }, ...clients];
+      const cleanDraft = { ...draft, name: draft.name.trim(), info: draft.info.trim() };
+      const next = isExisting
+        ? clients.map((client) => client.id === draft.id ? cleanDraft : client)
+        : [cleanDraft, ...clients];
       await persist(next);
-      setDraft(newClient());
+      setDraft(cleanDraft);
+      setMessage(isExisting ? 'Client updated.' : 'Client added to the register.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Save failed.');
+    } finally {
+      setSaving(false);
     }
   }
 
   async function uploadDocs(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     if (!files.length) return;
-    const docs = await Promise.all(files.map(readFile));
-    setDraft((current) => ({ ...current, documents: [...current.documents, ...docs] }));
+    try {
+      const docs = await Promise.all(files.map(readFile));
+      setDraft((current) => ({ ...current, documents: [...current.documents, ...docs] }));
+    } catch {
+      setError('Unable to read one of the selected documents.');
+    }
     event.target.value = '';
   }
 
-  async function removeClient(id: string) {
+  async function removeClient(client: RegisterClient) {
+    if (!window.confirm(`Delete ${client.name} from the register?`)) return;
     try {
-      await persist(clients.filter((client) => client.id !== id));
+      await persist(clients.filter((item) => item.id !== client.id));
+      if (draft.id === client.id) setDraft(newClient());
+      setMessage('Client deleted.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delete failed.');
     }
   }
 
+  function startNewClient() {
+    setDraft(newClient());
+    setError('');
+    setMessage('');
+  }
+
   return (
-    <div className="register-page">
-      <Panel title="Register clients" icon={FileText}>
-        <div className="register-toolbar">
-          <label className="account-search compact">
-            <Search className="h-4 w-4" />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search client, info, document..." />
-          </label>
-          <CircleButton title="New client" icon={Plus} onClick={() => setDraft(newClient())} />
+    <div className="register-page register-workspace">
+      <header className="register-page-header">
+        <div>
+          <span className="register-eyebrow"><Users /> Client register</span>
+          <h1>Clients</h1>
+          <p>Keep client information and documents together in one simple register.</p>
         </div>
+        <button type="button" className="register-primary-button" onClick={startNewClient}><Plus /> New client</button>
+      </header>
 
-        {(message || error) && <div className={`transaction-feedback ${error ? 'error' : 'success'}`}>{error || message}</div>}
+      <section className="register-summary">
+        <div><span>Registered clients</span><strong>{clients.length}</strong><Users /></div>
+        <div><span>Stored documents</span><strong>{documentCount}</strong><FolderOpen /></div>
+        <div><span>Current record</span><strong>{isExisting ? 'Editing' : 'New'}</strong><UserRound /></div>
+      </section>
 
-        <div className="register-editor">
-          <label className="form-field">
-            Client name
-            <input value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
-          </label>
-          <label className="form-field register-info-field">
-            Infos
-            <textarea value={draft.info} onChange={(event) => setDraft((current) => ({ ...current, info: event.target.value }))} />
-          </label>
-          <label className="upload-button">
-            <Upload className="h-4 w-4" />
-            Documents
-            <input type="file" multiple accept="image/*,.pdf" onChange={uploadDocs} />
-          </label>
-          <div className="register-doc-list">
-            {draft.documents.map((doc) => (
-              <span key={doc.id}>
-                {doc.name}
-                <button onClick={() => setDraft((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== doc.id) }))}>x</button>
-              </span>
-            ))}
+      {(message || error) && <div className={`transaction-feedback ${error ? 'error' : 'success'}`}>{error || message}</div>}
+
+      <div className="register-main-layout">
+        <aside className="register-directory">
+          <div className="register-directory-head">
+            <div>
+              <strong>Directory</strong>
+              <small>{filteredClients.length} visible</small>
+            </div>
           </div>
-          <CircleButton title="Save client" icon={Save} onClick={saveDraft} />
-        </div>
-      </Panel>
+          <label className="register-search">
+            <Search />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search clients or documents" />
+            {query && <button type="button" onClick={() => setQuery('')} aria-label="Clear search"><X /></button>}
+          </label>
+          <div className="register-client-list">
+            {filteredClients.map((client) => (
+              <article className={`register-list-item ${draft.id === client.id ? 'active' : ''}`} key={client.id}>
+                <button type="button" className="register-list-select" onClick={() => { setDraft(client); setError(''); setMessage(''); }}>
+                  <span className="register-client-avatar">{client.name.slice(0, 2).toUpperCase()}</span>
+                  <span className="register-client-summary">
+                    <strong>{client.name}</strong>
+                    <small>{client.documents.length} {client.documents.length === 1 ? 'document' : 'documents'}{client.info ? ` · ${client.info}` : ''}</small>
+                  </span>
+                </button>
+                <button type="button" className="register-list-delete" title="Delete client" aria-label={`Delete ${client.name}`} onClick={() => removeClient(client)}><Trash2 /></button>
+              </article>
+            ))}
+            {!filteredClients.length && (
+              <div className="register-empty">
+                <UserRound />
+                <strong>No clients found</strong>
+                <span>{query ? 'Try another search.' : 'Create the first client record.'}</span>
+              </div>
+            )}
+          </div>
+        </aside>
 
-      <div className="register-card-grid">
-        {filteredClients.map((client) => (
-          <article className="register-client-card" key={client.id}>
-            <div className="register-card-head">
-              <button onClick={() => setDraft(client)}>{client.name}</button>
-              <button className="grid-delete" title="Delete" onClick={() => removeClient(client.id)}>
-                <Trash2 className="h-4 w-4" />
-              </button>
+        <section className="register-editor-panel">
+          <div className="register-editor-head">
+            <div>
+              <span>{isExisting ? 'Client record' : 'New record'}</span>
+              <h2>{isExisting ? draft.name : 'Add a client'}</h2>
             </div>
-            <p>{client.info || 'No info yet.'}</p>
-            <div className="register-documents">
-              {client.documents.map((doc) => (
-                <a key={doc.id} href={doc.dataUrl} target="_blank" rel="noreferrer">
-                  {doc.type.startsWith('image/') ? <img src={doc.dataUrl} alt="" /> : <FileText className="h-5 w-5" />}
-                  <span>{doc.name}</span>
-                </a>
-              ))}
-              {!client.documents.length && <small>No documents</small>}
+            {isExisting && <button type="button" className="register-secondary-button" onClick={startNewClient}><Plus /> New</button>}
+          </div>
+
+          <div className="register-editor-form">
+            <label className="register-field">
+              <span>Client name <b>*</b></span>
+              <input value={draft.name} placeholder="Full name or company name" onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
+            </label>
+            <label className="register-field">
+              <span>Information <small>Optional</small></span>
+              <textarea value={draft.info} placeholder="Phone, address, reference or any useful note…" onChange={(event) => setDraft((current) => ({ ...current, info: event.target.value }))} />
+            </label>
+
+            <div className="register-files-section">
+              <div className="register-files-head">
+                <div>
+                  <strong>Documents</strong>
+                  <small>Images and PDF files</small>
+                </div>
+                <label className="register-upload-button">
+                  <Upload />
+                  Add documents
+                  <input type="file" multiple accept="image/*,.pdf" onChange={uploadDocs} />
+                </label>
+              </div>
+              <div className="register-file-grid">
+                {draft.documents.map((doc) => (
+                  <article className="register-file-card" key={doc.id}>
+                    <a href={doc.dataUrl} target="_blank" rel="noreferrer">
+                      {doc.type.startsWith('image/') ? <img src={doc.dataUrl} alt="" /> : <span className="register-pdf-preview"><FileText /></span>}
+                      <strong>{doc.name}</strong>
+                    </a>
+                    <button type="button" title="Remove document" aria-label={`Remove ${doc.name}`} onClick={() => setDraft((current) => ({ ...current, documents: current.documents.filter((item) => item.id !== doc.id) }))}><X /></button>
+                  </article>
+                ))}
+                {!draft.documents.length && (
+                  <label className="register-file-empty">
+                    <Upload />
+                    <strong>Drop in a document</strong>
+                    <span>or click to choose files</span>
+                    <input type="file" multiple accept="image/*,.pdf" onChange={uploadDocs} />
+                  </label>
+                )}
+              </div>
             </div>
-          </article>
-        ))}
-        {!filteredClients.length && <div className="transaction-empty-import">No clients found.</div>}
+
+            <div className="register-editor-actions">
+              <button type="button" className="register-secondary-button" onClick={startNewClient}>Clear</button>
+              <button type="button" className="register-primary-button" disabled={saving || !draft.name.trim()} onClick={saveDraft}><Save /> {saving ? 'Saving…' : isExisting ? 'Save changes' : 'Add client'}</button>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );

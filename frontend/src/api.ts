@@ -75,6 +75,10 @@ export async function updateAccountBalance(accountId: number, balance: string, n
   });
 }
 
+export async function removeAccount(accountId: number) {
+  return api<{ id: number; removed: boolean }>(`/accounts/${accountId}`, { method: 'DELETE' });
+}
+
 export async function listAgencyAccounts(agencyId: number) {
   return api<Account[]>(`/agencies/${agencyId}/accounts`);
 }
