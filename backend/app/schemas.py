@@ -132,6 +132,8 @@ class TransferCreate(BaseModel):
     occurred_at: datetime | None = None
     context_account_id: int | None = None
     contributions: list[dict[str, Any]] | None = None
+    action_button_id: str | None = None
+    source_transfer_id: int | None = None
 
 
 class AgencyLinkCreate(BaseModel):

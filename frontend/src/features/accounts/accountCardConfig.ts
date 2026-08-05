@@ -17,6 +17,7 @@ export type AccountButtonWidget = {
   label: string;
   action: AccountActionSlot;
   position: number;
+  popupConfig?: AccountsPopupConfig;
 };
 
 export type AccountContributorConfig = {
@@ -78,6 +79,8 @@ export type TransferPopupConfig = {
   applyFixedToAccount: boolean;
   fixedToAccountId: string;
   amountLabel: string;
+  amountMode: 'manual' | 'completedTransfer';
+  completedTransferFromAccountId: string;
   applyFixedAmount: boolean;
   fixedAmount: string;
   descriptionLabel: string;
@@ -105,6 +108,8 @@ export const defaultAccountsPopupConfig: AccountsPopupConfig = {
     applyFixedAccount: false,
     fixedAccountId: '',
     amountLabel: 'المبلغ',
+    amountMode: 'manual',
+    completedTransferFromAccountId: '',
     applyFixedAmount: false,
     fixedAmount: '',
     descriptionLabel: 'ملاحظة',
@@ -229,7 +234,38 @@ export function newTextWidget(position: number): AccountTextWidget {
 }
 
 export function newButtonWidget(position: number): AccountButtonWidget {
-  return { id: uid('button'), visible: true, label: `Button${position}`, action: 'versement', position };
+  return {
+    id: uid('button'), visible: true, label: `Button${position}`, action: 'versement', position,
+    popupConfig: clonePopupConfig(defaultAccountsPopupConfig),
+  };
+}
+
+export function clonePopupConfig(popups: AccountsPopupConfig): AccountsPopupConfig {
+  return {
+    movement: { ...popups.movement, contributors: popups.movement.contributors.map((item) => ({ ...item })) },
+    transfer: { ...popups.transfer },
+  };
+}
+
+export function getButtonPopupConfig(button: AccountButtonWidget, fallback: AccountsPopupConfig): AccountsPopupConfig {
+  const buttonTransfer = button.popupConfig?.transfer as (TransferPopupConfig & { completedTransferToAccountId?: string }) | undefined;
+  const fallbackTransfer = fallback.transfer as TransferPopupConfig & { completedTransferToAccountId?: string };
+  return {
+    movement: {
+      ...fallback.movement,
+      ...(button.popupConfig?.movement ?? {}),
+      contributors: (button.popupConfig?.movement.contributors ?? fallback.movement.contributors).map((item) => ({ ...item })),
+    },
+    transfer: {
+      ...fallback.transfer,
+      ...(buttonTransfer ?? {}),
+      completedTransferFromAccountId: buttonTransfer?.completedTransferFromAccountId
+        || buttonTransfer?.completedTransferToAccountId
+        || fallbackTransfer.completedTransferFromAccountId
+        || fallbackTransfer.completedTransferToAccountId
+        || '',
+    },
+  };
 }
 
 export function newContributor(position: number): AccountContributorConfig {
@@ -286,13 +322,14 @@ export function normalizeAccountCardConfig(config: Partial<AccountCardConfig> | 
   }
 
   const fallbackScreen = loadAccountsScreenConfig();
+  const popups = {
+    movement: { ...defaultAccountsPopupConfig.movement, ...(config?.popups?.movement ?? fallbackScreen.popups.movement) },
+    transfer: { ...defaultAccountsPopupConfig.transfer, ...(config?.popups?.transfer ?? fallbackScreen.popups.transfer) },
+  };
   return {
     texts: config?.texts?.length ? config.texts : defaultAccountCardConfig.texts,
-    buttons: config?.buttons?.length ? config.buttons : fallbackScreen.buttons,
-    popups: {
-      movement: { ...defaultAccountsPopupConfig.movement, ...(config?.popups?.movement ?? fallbackScreen.popups.movement) },
-      transfer: { ...defaultAccountsPopupConfig.transfer, ...(config?.popups?.transfer ?? fallbackScreen.popups.transfer) },
-    },
+    buttons: (config?.buttons?.length ? config.buttons : fallbackScreen.buttons).map((button) => ({ ...button, popupConfig: getButtonPopupConfig(button, popups) })),
+    popups,
     visibility: {
       hiddenRoles: Array.isArray(config?.visibility?.hiddenRoles)
         ? config.visibility.hiddenRoles.filter((role): role is Exclude<UserRole, 'Admin'> => role === 'Chef' || role === 'User')

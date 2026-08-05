@@ -1,8 +1,8 @@
-import { PropsWithChildren } from 'react';
+import { PropsWithChildren, ReactNode } from 'react';
 import { Save } from 'lucide-react';
 
 type PanelProps = PropsWithChildren<{
-  title?: string;
+  title?: ReactNode;
   icon?: typeof Save;
   className?: string;
 }>;

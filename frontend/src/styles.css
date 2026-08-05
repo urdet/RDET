@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Crimson+Text:wght@400;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -3115,6 +3117,26 @@ button {
   margin-top: 0;
 }
 
+.contribution-heading-control {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+}
+
+.contribution-heading-control h3 {
+  flex: 0 0 auto;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.contribution-heading-control .contribution-filter {
+  flex: 0 1 260px;
+  width: 260px;
+  min-width: 180px;
+}
+
 .contribution-card-grid {
   margin-top: 12px;
   display: grid;
@@ -3375,6 +3397,25 @@ button {
 
 .config-row .form-field {
   margin-top: 0;
+}
+
+.config-row.button-config-row {
+  grid-template-columns: 82px 150px minmax(150px, 1fr) 72px 92px 36px;
+}
+
+.button-config-row.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.button-settings-trigger {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 12px;
+  font-weight: 850;
 }
 
 .nested-config {
@@ -4449,8 +4490,9 @@ button {
   background: #fbfbfa;
 }
 
-.contribution-person-card {
+.unpaid-detail-card.contribution-person-card {
   width: 100%;
+  grid-template-columns: minmax(180px, 1fr) max-content 32px 32px;
 }
 
 .unpaid-person-main {
@@ -5208,7 +5250,7 @@ button {
   --line-strong: #d9d9d6;
   --hover: #f1f1ef;
   --shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
-  --mono: "JetBrains Mono", "Fira Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --mono: "Crimson Text", Georgia, "Times New Roman", serif;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -5579,6 +5621,20 @@ body {
   height: 16px;
 }
 
+.account-title-balance {
+  margin-left: 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+html[dir='rtl'] .account-title-balance {
+  margin-right: 10px;
+  margin-left: 0;
+}
+
 .metric-box,
 .account-kpi-card {
   min-height: 150px;
@@ -5741,6 +5797,26 @@ body {
   color: var(--text);
 }
 
+.compte-action-button.money-in {
+  color: #047857;
+  background: #d1fae5;
+}
+
+.compte-action-button.money-out {
+  color: #c2410c;
+  background: #ffedd5;
+}
+
+.compte-action-button.money-in:hover {
+  border-color: #6ee7b7;
+  background: #a7f3d0;
+}
+
+.compte-action-button.money-out:hover {
+  border-color: #fdba74;
+  background: #fed7aa;
+}
+
 .compte-dynamic-texts span {
   color: var(--muted);
   font-family: var(--mono);
@@ -5807,8 +5883,8 @@ body {
 
 .account-modal-backdrop {
   z-index: 40;
-  padding: 0;
-  align-items: stretch;
+  padding: 12px 0;
+  align-items: flex-start;
   justify-content: flex-end;
   background: rgba(25, 25, 25, 0.18);
   backdrop-filter: blur(2px);
@@ -5816,8 +5892,8 @@ body {
 
 .account-modal {
   width: min(520px, 100vw);
-  max-height: none;
-  height: 100vh;
+  max-height: calc(100vh - 24px);
+  height: auto;
   overflow: auto;
   border-left: 1px solid var(--line);
   border-radius: 0;
@@ -5827,7 +5903,7 @@ body {
 }
 
 .account-modal .notion-card {
-  min-height: 100vh;
+  min-height: 0;
   border: 0;
   border-radius: 0;
   box-shadow: none;
@@ -5857,8 +5933,12 @@ body {
 }
 
 .transfer-balance {
-  color: var(--muted);
+  color: var(--text);
   font-family: var(--mono);
+  font-size: 18px;
+  line-height: 1;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
 }
 
 .transfer-error,
@@ -5895,6 +5975,10 @@ body {
 .login-screen {
   border-color: var(--line);
   background: var(--surface);
+}
+
+.account-modal .form-field input:not([type='checkbox']):not([type='radio']) {
+  font-size: 16px;
 }
 
 .service-gradient-button,
@@ -7394,14 +7478,55 @@ body,
 .expense-kpis div {
   min-height: 60px;
   padding: 8px 10px;
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--kpi-color, var(--accent));
+}
+
+.account-kpi-card {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--kpi-soft, var(--accent-soft)) 76%, transparent), transparent 72%),
+    var(--card);
+}
+
+.account-kpi-cashBalance {
+  --kpi-color: #2563eb;
+  --kpi-soft: #dbeafe;
+}
+
+.account-kpi-cashReal {
+  --kpi-color: #059669;
+  --kpi-soft: #d1fae5;
+}
+
+.account-kpi-unpaid {
+  --kpi-color: #dc2626;
+  --kpi-soft: #fee2e2;
+}
+
+.account-kpi-calculatedCash {
+  --kpi-color: #7c3aed;
+  --kpi-soft: #ede9fe;
+}
+
+.account-kpi-totalDebit {
+  --kpi-color: #0891b2;
+  --kpi-soft: #cffafe;
+}
+
+.account-kpi-totalCredit {
+  --kpi-color: #ea580c;
+  --kpi-soft: #ffedd5;
+}
+
+.account-kpi-todayDeposits {
+  --kpi-color: #ca8a04;
+  --kpi-soft: #fef9c3;
 }
 
 .account-kpi-icon {
   width: 30px;
   height: 30px;
-  color: var(--accent-strong);
-  background: var(--accent-soft);
+  color: var(--kpi-color, var(--accent-strong));
+  background: var(--kpi-soft, var(--accent-soft));
 }
 
 .account-kpi-label,
@@ -7498,7 +7623,7 @@ body,
 }
 
 .flow-board {
-  grid-template-columns: repeat(auto-fill, minmax(245px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
   gap: 8px;
 }
 
@@ -7527,6 +7652,7 @@ body,
   color: var(--muted);
   font-size: 14px;
   font-weight: 900;
+  text-align: center;
 }
 
 .compte-solde {

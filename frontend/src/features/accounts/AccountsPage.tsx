@@ -5,10 +5,10 @@ import { Language, tr } from '../../i18n';
 import { can } from '../../permissions';
 import { CircleButton } from '../../shared/ui/CircleButton';
 import { Panel } from '../../shared/ui/Panel';
-import { Account, AccountContributionEntry, AccountMovementEntry, AgencyTransferRule, AppSettings, CurrentUser, Dashboard, InterAgencySettlement, InterAgencyTransfer, ScreenId, TransferContribution } from '../../types';
+import { Account, AccountContributionEntry, AccountMovementEntry, AgencyTransferRule, AppSettings, CompletedTransferOption, CurrentUser, Dashboard, InterAgencySettlement, InterAgencyTransfer, ScreenId, TransferContribution } from '../../types';
 import { arAccountName, arText } from '../../utils/arabic';
 import { money } from '../../utils/format';
-import { actionTargets, AccountActionSlot, AccountButtonWidget, AccountCardConfig, AccountCardConfigMap, getAccountCardConfig, loadAccountCardConfigs, normalizeAccountCardConfig, renderTextWidget, saveAccountCardConfigs } from './accountCardConfig';
+import { actionTargets, AccountActionSlot, AccountButtonWidget, AccountCardConfig, AccountCardConfigMap, getAccountCardConfig, getButtonPopupConfig, loadAccountCardConfigs, normalizeAccountCardConfig, renderTextWidget, saveAccountCardConfigs } from './accountCardConfig';
 import { CompteBox } from './CompteBox';
 
 type AccountsPageProps = {
@@ -24,6 +24,7 @@ type ActiveAction = {
   kind: AccountActionSlot;
   account: Account;
   config: AccountCardConfig;
+  buttonId?: string;
 } | null;
 
 type ContributorCard = {
@@ -104,6 +105,8 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
   const [targetAccountId, setTargetAccountId] = useState('');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
+  const [completedTransferOptions, setCompletedTransferOptions] = useState<CompletedTransferOption[]>([]);
+  const [selectedSourceTransferId, setSelectedSourceTransferId] = useState('');
   const [personName, setPersonName] = useState('');
   const [contributorName, setContributorName] = useState('');
   const [contributorPickerOpen, setContributorPickerOpen] = useState(false);
@@ -150,8 +153,6 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
     });
   }, [accounts, accountOrder]);
 
-  const visibleAccounts = accounts.filter((account) => account.visible).length;
-  const positiveAccounts = accounts.filter((account) => Number(account.balance) >= 0).length;
   const transferTargets = accounts.filter((account) => String(account.id) !== sourceAccountId);
   const selectedContributionAccount = accounts.find((account) => String(account.id) === contributionAccountId) ?? accounts[0];
   const canCreateAccount = can(currentUser, appSettings, 'accounts', 'create');
@@ -326,7 +327,27 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
       .catch(() => setPopupContributionEntries([]));
   }, [activeAction?.kind, targetAccountId]);
 
-  function openAction(account: Account, kind: AccountActionSlot, accountConfig: AccountCardConfig) {
+  useEffect(() => {
+    const transferConfig = activeAction?.config.popups.transfer;
+    const referenceFromId = transferConfig?.completedTransferFromAccountId;
+    if (activeAction?.kind !== 'transfer' || transferConfig?.amountMode !== 'completedTransfer' || !sourceAccountId || !referenceFromId) {
+      setCompletedTransferOptions([]);
+      setSelectedSourceTransferId('');
+      return;
+    }
+    api<CompletedTransferOption[]>(`/account-transfers/completed-options?from_account_id=${encodeURIComponent(referenceFromId)}&to_account_id=${encodeURIComponent(sourceAccountId)}`)
+      .then((rows) => {
+        setCompletedTransferOptions(rows);
+        setSelectedSourceTransferId('');
+        setAmount('');
+      })
+      .catch(() => {
+        setCompletedTransferOptions([]);
+        setSelectedSourceTransferId('');
+      });
+  }, [activeAction?.kind, activeAction?.buttonId, activeAction?.config.popups.transfer.amountMode, activeAction?.config.popups.transfer.completedTransferFromAccountId, sourceAccountId]);
+
+  function openAction(account: Account, kind: AccountActionSlot, accountConfig: AccountCardConfig, button?: AccountButtonWidget) {
     if (!canUseAccountActions || (kind === 'transfer' && !canUseTransfer) || (kind === 'versement' && !canUseMovement)) {
       setError(t('noPermission'));
       return;
@@ -341,18 +362,21 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
       return;
     }
     if (kind === 'hidden') return;
-    const popups = accountConfig.popups;
+    const popups = button ? getButtonPopupConfig(button, accountConfig.popups) : accountConfig.popups;
+    const actionConfig = { ...accountConfig, popups };
     setError('');
     setAmount(kind === 'transfer' && popups.transfer.applyFixedAmount ? popups.transfer.fixedAmount : kind === 'versement' && popups.movement.applyFixedAmount ? popups.movement.fixedAmount : '');
     setDescription(kind === 'transfer' && popups.transfer.applyFixedDescription ? popups.transfer.fixedDescription : kind === 'versement' && popups.movement.applyFixedDescription ? popups.movement.fixedDescription : '');
     setPersonName('');
     setContributorName('');
+    setSelectedSourceTransferId('');
+    setCompletedTransferOptions([]);
     setMovementType(popups.movement.applyFixedType ? popups.movement.fixedType : popups.movement.defaultType);
     setSourceAccountId(kind === 'transfer' ? (popups.transfer.applyFixedFromAccount ? popups.transfer.fixedFromAccountId : String(account.id)) : '');
     setTargetAccountId(kind === 'transfer'
       ? (popups.transfer.applyFixedToAccount ? popups.transfer.fixedToAccountId : '')
       : (popups.movement.applyFixedAccount ? popups.movement.fixedAccountId : String(account.id)));
-    setActiveAction({ account, kind, config: accountConfig });
+    setActiveAction({ account, kind, config: actionConfig, buttonId: button?.id });
   }
 
   function openContributorMovement(card: ContributorCard, type: 'versement' | 'retrait') {
@@ -474,6 +498,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
             contributions: canonicalContributorName(contributorName)
               ? [{ name: canonicalContributorName(contributorName), amount, direction: movementType }]
               : undefined,
+            action_button_id: activeAction.buttonId,
           }),
         });
       }
@@ -487,6 +512,8 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
             amount,
             description: description || 'Transfert entre comptes',
             context_account_id: activeAction.account.id,
+            action_button_id: activeAction.buttonId,
+            source_transfer_id: selectedSourceTransferId ? Number(selectedSourceTransferId) : undefined,
           }),
         });
       }
@@ -647,7 +674,7 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
           {kpiConfigs.filter((item) => item.visible).map((item) => {
             const icon = item.id === 'unpaid' ? Banknote : item.id === 'totalDebit' || item.id === 'todayDeposits' ? TrendingUp : item.id === 'totalCredit' ? TrendingDown : Landmark;
             const value = evaluateKpiFormula(item.formula, accounts, dashboard);
-            return <KpiCard key={item.id} icon={icon} label={item.label} value={value === null ? '#FORMULA' : money(value)} />;
+            return <KpiCard key={item.id} tone={item.id} icon={icon} label={item.label} value={value === null ? '#FORMULA' : money(value)} />;
           })}
         </div>
         {canConfigureKpis && (
@@ -678,7 +705,6 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
 
       <div className="accounts-toolbar">
         <div className="account-toolbar-actions">
-          <div className="account-count">{orderedAccounts.length} {t('accountsCount')}, {visibleAccounts} {t('visible')}, {positiveAccounts} {t('positive')}</div>
           {canUseTransfer && <CircleButton title={t('interAgencyTransfers')} icon={Send} onClick={() => { setError(''); setInterAgencyMode(activeInterAgencyRules.length ? 'send' : 'return'); setInterAgencyOpen(true); setInterAgencyRuleId(activeInterAgencyRules[0] ? String(activeInterAgencyRules[0].id) : ''); setReturnTransferId(returnableTransfers[0] ? String(returnableTransfers[0].id) : ''); }} />}
           {canCreateAccount && <CircleButton title={t('createAccount')} icon={Plus} onClick={() => { setError(''); setCreatingAccount(true); }} />}
           {orderDirty && <CircleButton title={t('saveOrder')} icon={Save} onClick={saveAccountOrder} />}
@@ -767,13 +793,14 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
                 account={account}
                 texts={config.texts.filter((item) => item.visible).sort((a, b) => a.position - b.position).map((item) => renderTextWidget(item, account, dashboard))}
                 buttons={config.buttons}
+                popups={config.popups}
                 onOpen={canChangeBalance ? () => {
                   setError('');
                   setEditingBalanceAccount(account);
                   setManualBalance(String(account.balance ?? '0'));
                   setManualAccountSide(account.normal_balance_side ?? 'debit');
                 } : undefined}
-                onAction={(kind) => openAction(account, kind, config)}
+                onAction={(kind, button) => openAction(account, kind, config, button)}
                 onDetails={canOpenDetails ? () => openAccountDetails(account) : undefined}
                 onDelete={canDeleteAccount ? () => deleteAccount(account) : undefined}
               />
@@ -785,13 +812,12 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
       {detailsAccount && (
         <div className="account-modal-backdrop" role="presentation">
           <div className="account-modal" role="dialog" aria-modal="true" aria-label={t('accountDetails')}>
-            <Panel title={arAccountName(detailsAccount.name)} icon={History}>
+            <Panel
+              title={<>{arAccountName(detailsAccount.name)} <strong className="account-title-balance">{money(detailsAccount.balance)}</strong></>}
+              icon={History}
+            >
               <div className="transfer-panel">
-                <div className="transfer-panel-header">
-                  <div className="account-details-total">
-                    <span>{t('totalBalance')}</span>
-                    <strong>{money(detailsAccount.balance)}</strong>
-                  </div>
+                <div className="transfer-panel-header modal-close-only">
                   <button className="circle-action" title={t('close')} onClick={() => setDetailsAccount(null)}>
                     <X className="h-4 w-4" />
                   </button>
@@ -825,27 +851,24 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
 
       <section className="contribution-section">
         <div className="config-section-header">
-          <div>
-            <h3>{t('details')} {t('contributor')}</h3>
+          <div className="contribution-heading-control">
+            <h3>{t('movementDetailsForAccount')}:</h3>
+            <label className="form-field contribution-filter">
+              <select aria-label={t('account')} value={contributionAccountId} onChange={(event) => setContributionAccountId(event.target.value)}>
+                {accounts.map((account) => <option key={account.id} value={account.id}>{arAccountName(account.name)}</option>)}
+              </select>
+            </label>
           </div>
-          <label className="form-field contribution-filter">
-            {t('account')}
-            <select value={contributionAccountId} onChange={(event) => setContributionAccountId(event.target.value)}>
-              {accounts.map((account) => <option key={account.id} value={account.id}>{arAccountName(account.name)}</option>)}
-            </select>
-          </label>
         </div>
         <div className="contribution-card-grid">
           {contributorCards.map((card) => (
             <article className="unpaid-detail-card contribution-person-card" key={card.name}>
               <button className="unpaid-person-main" type="button" onClick={() => setHistoryContributorName(card.name)}>
                 <strong>{card.name}</strong>
-                <span>{arAccountName(selectedContributionAccount?.name) || t('account')} - {card.entries.length}</span>
               </button>
               <b className={card.total >= 0 ? '' : 'negative'}>{card.total >= 0 ? '+' : '-'}{money(Math.abs(card.total))}</b>
               {canUseMovement && <button className="mini-action add" title={tr('interAgencySend', language)} type="button" onClick={() => openContributorMovement(card, 'versement')}><Plus className="h-4 w-4" /></button>}
               {canUseMovement && <button className="mini-action out" title={tr('interAgencyReturn', language)} type="button" onClick={() => openContributorMovement(card, 'retrait')}><Minus className="h-4 w-4" /></button>}
-              <CircleButton title={t('history')} icon={History} onClick={() => setHistoryContributorName(card.name)} />
             </article>
           ))}
           {!contributorCards.length && <div className="empty-service-state">{t('empty')}</div>}
@@ -1077,16 +1100,6 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
                         </select>
                       </label>
                     )}
-                    <label className="form-field">
-                      {arText(activeAction.config.popups.movement.amountLabel)}
-                      <input value={amount} disabled={activeAction.config.popups.movement.applyFixedAmount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} placeholder="0.00" />
-                    </label>
-                    {activeAction.config.popups.movement.showDescription && !activeAction.config.popups.movement.applyFixedDescription && (
-                      <label className="form-field transfer-description">
-                        {arText(activeAction.config.popups.movement.descriptionLabel)}
-                        <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t('note')} />
-                      </label>
-                    )}
                     {activeAction.config.popups.movement.showContributors && (
                       <label className="form-field transfer-description contributor-picker-field">
                         {arText(activeAction.config.popups.movement.contributorsLabel)}
@@ -1109,6 +1122,16 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
                             ))}
                           </div>
                         )}
+                      </label>
+                    )}
+                    <label className="form-field">
+                      {arText(activeAction.config.popups.movement.amountLabel)}
+                      <input value={amount} disabled={activeAction.config.popups.movement.applyFixedAmount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} placeholder="0.00" />
+                    </label>
+                    {activeAction.config.popups.movement.showDescription && !activeAction.config.popups.movement.applyFixedDescription && (
+                      <label className="form-field transfer-description">
+                        {arText(activeAction.config.popups.movement.descriptionLabel)}
+                        <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t('note')} />
                       </label>
                     )}
                   </div>
@@ -1136,7 +1159,26 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
                     </label>
                     <label className="form-field">
                       {arText(activeAction.config.popups.transfer.amountLabel)}
-                      <input value={amount} disabled={activeAction.config.popups.transfer.applyFixedAmount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} placeholder="0.00" />
+                      {activeAction.config.popups.transfer.amountMode === 'completedTransfer' ? (
+                        <select
+                          value={selectedSourceTransferId}
+                          onChange={(event) => {
+                            const transferId = event.target.value;
+                            const option = completedTransferOptions.find((item) => String(item.id) === transferId);
+                            setSelectedSourceTransferId(transferId);
+                            setAmount(option?.amount ?? '');
+                          }}
+                        >
+                          <option value="">{completedTransferOptions.length ? t('selectCompletedTransfer') : t('noCompletedTransfers')}</option>
+                          {completedTransferOptions.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {money(item.amount)} — {new Date(item.occurred_at).toLocaleDateString(language === 'ar' ? 'ar-MA' : language === 'fr' ? 'fr-FR' : 'en-GB')}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input value={amount} disabled={activeAction.config.popups.transfer.applyFixedAmount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} placeholder="0.00" />
+                      )}
                     </label>
                   </div>
                 )}
@@ -1181,9 +1223,9 @@ export function AccountsPage({ accounts, dashboard, currentUser, language, onRef
   );
 }
 
-function KpiCard({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
+function KpiCard({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: string; value: string; tone: AccountKpiId }) {
   return (
-    <div className="account-kpi-card">
+    <div className={`account-kpi-card account-kpi-${tone}`}>
       <div className="account-kpi-icon"><Icon className="h-5 w-5" /></div>
       <div>
         <div className="account-kpi-label">{label}</div>

@@ -211,6 +211,7 @@ def create_transfer(db: Session, payload, user: User, commit: bool = True) -> Ac
         amount=amount,
         description=payload.description,
         contributions=getattr(payload, "contributions", None),
+        source_transfer_id=getattr(payload, "source_transfer_id", None),
         occurred_at=occurred_at,
         created_by=user.id,
     )

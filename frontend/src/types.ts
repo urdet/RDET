@@ -274,6 +274,13 @@ export type AccountMovementEntry = {
   contributions: TransferContribution[];
 };
 
+export type CompletedTransferOption = {
+  id: number;
+  amount: string;
+  occurred_at: string;
+  description: string | null;
+};
+
 export type AgencyLedgerEntry = {
   id: number;
   kind: 'expense' | 'income';

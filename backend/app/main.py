@@ -230,6 +230,8 @@ def ensure_multi_agency_schema() -> None:
       db.execute(text("ALTER TABLE account_transfers ADD COLUMN IF NOT EXISTS contributions JSONB"))
       db.execute(text("ALTER TABLE account_transfers ADD COLUMN IF NOT EXISTS import_batch_id TEXT"))
       db.execute(text("ALTER TABLE account_transfers ADD COLUMN IF NOT EXISTS import_source TEXT"))
+      db.execute(text("ALTER TABLE account_transfers ADD COLUMN IF NOT EXISTS source_transfer_id BIGINT REFERENCES account_transfers(id)"))
+      db.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_account_transfers_source_transfer ON account_transfers(source_transfer_id) WHERE source_transfer_id IS NOT NULL"))
       db.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS company_id BIGINT REFERENCES companies(id)"))
       db.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS image_url TEXT"))
       db.execute(text("ALTER TABLE services ADD COLUMN IF NOT EXISTS routing_config JSONB"))
@@ -1770,17 +1772,49 @@ def require_fixed_transfer_rules(payload: TransferCreate, user: User, db: Sessio
 
     account_config = settings.get(str(payload.context_account_id), {}) if isinstance(settings, dict) else {}
     popups = account_config.get("popups", {}) if isinstance(account_config, dict) else {}
+    buttons = account_config.get("buttons", []) if isinstance(account_config, dict) else []
+    selected_button = None
+    if payload.action_button_id and isinstance(buttons, list):
+        selected_button = next((item for item in buttons if isinstance(item, dict) and str(item.get("id")) == payload.action_button_id), None)
+        if not selected_button:
+            raise HTTPException(status_code=403, detail="Configured action button not found")
+        if isinstance(selected_button.get("popupConfig"), dict):
+            popups = selected_button["popupConfig"]
     movement = popups.get("movement", {}) if isinstance(popups, dict) else {}
     transfer_config = popups.get("transfer", {}) if isinstance(popups, dict) else {}
 
     is_between_accounts = bool(payload.from_account_id and payload.to_account_id)
     if is_between_accounts:
+        if selected_button and selected_button.get("action") != "transfer":
+            raise HTTPException(status_code=403, detail="Action button is not configured for transfers")
         fixed_from = str(transfer_config.get("fixedFromAccountId") or "")
         fixed_to = str(transfer_config.get("fixedToAccountId") or "")
         if transfer_config.get("applyFixedFromAccount") and str(payload.from_account_id) != fixed_from:
             raise HTTPException(status_code=403, detail="Fixed source account cannot be changed")
         if transfer_config.get("applyFixedToAccount") and str(payload.to_account_id) != fixed_to:
             raise HTTPException(status_code=403, detail="Fixed target account cannot be changed")
+        use_completed = transfer_config.get("amountMode") == "completedTransfer"
+        if use_completed:
+            if not payload.source_transfer_id:
+                raise HTTPException(status_code=400, detail="Select a completed transfer")
+            reference_from_id = int(transfer_config.get("completedTransferFromAccountId") or transfer_config.get("completedTransferToAccountId") or 0)
+            require_account_access(db.get(Account, reference_from_id), user, db)
+            source_transfer = db.scalar(
+                select(AccountTransfer)
+                .where(AccountTransfer.id == payload.source_transfer_id)
+                .with_for_update()
+            )
+            if not source_transfer or source_transfer.reversed_at is not None:
+                raise HTTPException(status_code=404, detail="Completed transfer not found")
+            if source_transfer.from_account_id != reference_from_id or source_transfer.to_account_id != payload.from_account_id:
+                raise HTTPException(status_code=400, detail="Completed transfer does not match the configured accounts")
+            if Decimal(source_transfer.amount) != Decimal(payload.amount):
+                raise HTTPException(status_code=400, detail="Transfer amount does not match the selected completed transfer")
+            already_used = db.scalar(select(AccountTransfer.id).where(AccountTransfer.source_transfer_id == source_transfer.id))
+            if already_used:
+                raise HTTPException(status_code=409, detail="Completed transfer was already used")
+        elif payload.source_transfer_id:
+            raise HTTPException(status_code=400, detail="Completed transfer selection is not enabled")
         return
 
     fixed_account = str(movement.get("fixedAccountId") or "")
@@ -2189,6 +2223,38 @@ def account_contributions(account_id: int, user: User = Depends(current_user), d
             "contributions": contributions,
         })
     return result
+
+
+@app.get("/account-transfers/completed-options")
+def completed_transfer_options(
+    from_account_id: int = Query(...),
+    to_account_id: int = Query(...),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    require_account_access(db.get(Account, from_account_id), user, db)
+    require_account_access(db.get(Account, to_account_id), user, db)
+    used_transfer_ids = select(AccountTransfer.source_transfer_id).where(AccountTransfer.source_transfer_id.is_not(None))
+    rows = db.scalars(
+        select(AccountTransfer)
+        .where(
+            AccountTransfer.from_account_id == from_account_id,
+            AccountTransfer.to_account_id == to_account_id,
+            AccountTransfer.reversed_at.is_(None),
+            AccountTransfer.id.not_in(used_transfer_ids),
+        )
+        .order_by(AccountTransfer.occurred_at.desc(), AccountTransfer.id.desc())
+        .limit(250)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "amount": row.amount,
+            "occurred_at": row.occurred_at,
+            "description": row.description,
+        }
+        for row in rows
+    ]
 
 
 @app.get("/accounts/{account_id}/movements")

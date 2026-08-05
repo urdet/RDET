@@ -1,17 +1,18 @@
-import { ArrowLeftRight, ClipboardList, ExternalLink, EyeOff, Landmark, MoreVertical, Receipt, RotateCw, Trash2, WalletCards } from 'lucide-react';
+import { ArrowLeftRight, ArrowRight, ClipboardList, ExternalLink, EyeOff, Landmark, MoreVertical, Receipt, RotateCw, Trash2, WalletCards } from 'lucide-react';
 import { useState } from 'react';
 import { tr } from '../../i18n';
 import { Account } from '../../types';
 import { arAccountName, arActionLabel } from '../../utils/arabic';
 import { accountBalance } from '../../utils/format';
-import { AccountActionSlot, AccountButtonWidget } from './accountCardConfig';
+import { AccountActionSlot, AccountButtonWidget, AccountsPopupConfig, getButtonPopupConfig } from './accountCardConfig';
 
 type CompteBoxProps = {
   account: Account;
   texts?: string[];
   buttons?: AccountButtonWidget[];
+  popups?: AccountsPopupConfig;
   showAction?: boolean;
-  onAction?: (action: AccountActionSlot) => void;
+  onAction?: (action: AccountActionSlot, button: AccountButtonWidget) => void;
   onOpen?: () => void;
   onDetails?: () => void;
   onDelete?: () => void;
@@ -27,17 +28,34 @@ const actionIcons = {
   refresh: RotateCw,
 };
 
-function ActionButton({ button, onAction }: { button: AccountButtonWidget; onAction?: (action: AccountActionSlot) => void }) {
+function moneyDirection(button: AccountButtonWidget, account: Account, popups?: AccountsPopupConfig): 'in' | 'out' | null {
+  const buttonPopups = popups ? getButtonPopupConfig(button, popups) : button.popupConfig;
+  if (button.action === 'versement') {
+    const type = buttonPopups?.movement.applyFixedType ? buttonPopups.movement.fixedType : buttonPopups?.movement.defaultType;
+    return type === 'retrait' ? 'out' : 'in';
+  }
+  if (button.action === 'transfer') {
+    const accountId = String(account.id);
+    const fromAccountId = buttonPopups?.transfer.applyFixedFromAccount ? buttonPopups.transfer.fixedFromAccountId : accountId;
+    const toAccountId = buttonPopups?.transfer.applyFixedToAccount ? buttonPopups.transfer.fixedToAccountId : '';
+    if (toAccountId === accountId && fromAccountId !== accountId) return 'in';
+    if (fromAccountId === accountId) return 'out';
+  }
+  return null;
+}
+
+function ActionButton({ button, account, popups, onAction }: { button: AccountButtonWidget; account: Account; popups?: AccountsPopupConfig; onAction?: (action: AccountActionSlot) => void }) {
   const action = button.action;
   if (action === 'hidden') return <span />;
-  const Icon = actionIcons[action as keyof typeof actionIcons] ?? ExternalLink;
+  const direction = moneyDirection(button, account, popups);
+  const Icon = direction ? ArrowRight : actionIcons[action as keyof typeof actionIcons] ?? ExternalLink;
   return (
-    <button className="compte-action-button" title={arActionLabel(button.label || action)} aria-label={arActionLabel(button.label || action)} onClick={(event) => { event.stopPropagation(); onAction?.(action); }}>
+    <button className={`compte-action-button${direction ? ` money-${direction}` : ''}`} title={arActionLabel(button.label || action)} aria-label={arActionLabel(button.label || action)} onClick={(event) => { event.stopPropagation(); onAction?.(action, button); }}>
       <Icon className="h-4 w-4" />
     </button>
   );
 }
-export function CompteBox({ account, texts = [], buttons = [], showAction = true, onAction, onOpen, onDetails, onDelete }: CompteBoxProps) {
+export function CompteBox({ account, texts = [], buttons = [], popups, showAction = true, onAction, onOpen, onDetails, onDelete }: CompteBoxProps) {
   const visibleButtons = buttons.filter((button) => button.visible && button.action !== 'hidden').sort((a, b) => a.position - b.position).slice(0, 2);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -88,11 +106,11 @@ export function CompteBox({ account, texts = [], buttons = [], showAction = true
         <div className="compte-solde">{accountBalance(account.balance)}</div>
         {showAction && (
           <div className="compte-actions-row">
-            {visibleButtons[0] ? <ActionButton button={visibleButtons[0]} onAction={onAction} /> : <span className="compte-action-placeholder" />}
+            {visibleButtons[0] ? <ActionButton button={visibleButtons[0]} account={account} popups={popups} onAction={onAction} /> : <span className="compte-action-placeholder" />}
             <div className="compte-dynamic-texts">
               {texts.map((text, index) => <span key={`${text}-${index}`}>{text}</span>)}
             </div>
-            {visibleButtons[1] ? <ActionButton button={visibleButtons[1]} onAction={onAction} /> : <span className="compte-action-placeholder" />}
+            {visibleButtons[1] ? <ActionButton button={visibleButtons[1]} account={account} popups={popups} onAction={onAction} /> : <span className="compte-action-placeholder" />}
           </div>
         )}
         {!showAction && (

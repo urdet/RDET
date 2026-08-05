@@ -12,6 +12,7 @@ import {
   availableFormulaMetrics,
   defaultAccountCardConfig,
   getAccountCardConfig,
+  getButtonPopupConfig,
   loadAccountCardConfigs,
   newButtonWidget,
   newTextWidget,
@@ -39,10 +40,13 @@ export function AccountSettingsPage({ accounts, dashboard }: AccountSettingsPage
   const [query, setQuery] = useState('');
   const [saved, setSaved] = useState(false);
   const [screenSaved, setScreenSaved] = useState(false);
+  const [selectedPopupButtonId, setSelectedPopupButtonId] = useState('');
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? accounts[0];
   const config = selectedAccount ? getAccountCardConfig(configs, selectedAccount.id) : defaultAccountCardConfig;
   const screenConfig = { buttons: config.buttons, popups: config.popups };
+  const selectedPopupButton = screenConfig.buttons.find((button) => button.id === selectedPopupButtonId) ?? screenConfig.buttons[0];
+  const selectedButtonPopups = selectedPopupButton ? getButtonPopupConfig(selectedPopupButton, config.popups) : config.popups;
 
   const filteredAccounts = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -78,11 +82,13 @@ export function AccountSettingsPage({ accounts, dashboard }: AccountSettingsPage
   }
 
   function updateMovementPopup(patch: Partial<typeof screenConfig.popups.movement>) {
-    updateScreenConfig((prev) => ({ ...prev, popups: { ...prev.popups, movement: { ...prev.popups.movement, ...patch } } }));
+    if (!selectedPopupButton) return;
+    updateButton(selectedPopupButton.id, { popupConfig: { ...selectedButtonPopups, movement: { ...selectedButtonPopups.movement, ...patch } } });
   }
 
   function updateTransferPopup(patch: Partial<typeof screenConfig.popups.transfer>) {
-    updateScreenConfig((prev) => ({ ...prev, popups: { ...prev.popups, transfer: { ...prev.popups.transfer, ...patch } } }));
+    if (!selectedPopupButton) return;
+    updateButton(selectedPopupButton.id, { popupConfig: { ...selectedButtonPopups, transfer: { ...selectedButtonPopups.transfer, ...patch } } });
   }
 
   function toggleHiddenRole(role: Exclude<UserRole, 'Admin'>, hidden: boolean) {
@@ -165,6 +171,7 @@ export function AccountSettingsPage({ accounts, dashboard }: AccountSettingsPage
                 className={`account-settings-item ${account.id === selectedAccount.id ? 'active' : ''}`}
                 onClick={() => {
                   setSelectedAccountId(account.id);
+                  setSelectedPopupButtonId('');
                   setSaved(false);
                 }}
               >
@@ -182,7 +189,7 @@ export function AccountSettingsPage({ accounts, dashboard }: AccountSettingsPage
           </div>
 
           <div className="settings-preview">
-            <CompteBox account={selectedAccount} texts={previewTexts} buttons={screenConfig.buttons} />
+            <CompteBox account={selectedAccount} texts={previewTexts} buttons={screenConfig.buttons} popups={screenConfig.popups} />
           </div>
 
           <section className="config-section">
@@ -260,8 +267,8 @@ export function AccountSettingsPage({ accounts, dashboard }: AccountSettingsPage
             </div>
             <div className="formula-help">These buttons and actions are saved only for the selected compte.</div>
             <div className="config-list">
-              {screenConfig.buttons.sort((a, b) => a.position - b.position).map((button) => (
-                <div className="config-row" key={button.id}>
+              {[...screenConfig.buttons].sort((a, b) => a.position - b.position).map((button) => (
+                <div className={`config-row button-config-row ${selectedPopupButton?.id === button.id ? 'active' : ''}`} key={button.id}>
                   <label className="toggle-line">
                     <input type="checkbox" checked={button.visible} onChange={(event) => updateButton(button.id, { visible: event.target.checked })} />
                     <span>Show</span>
@@ -272,7 +279,7 @@ export function AccountSettingsPage({ accounts, dashboard }: AccountSettingsPage
                   </label>
                   <label className="form-field">
                     Popup / action
-                    <select value={button.action} onChange={(event) => updateButton(button.id, { action: event.target.value as AccountButtonWidget['action'] })}>
+                    <select value={button.action} onChange={(event) => { updateButton(button.id, { action: event.target.value as AccountButtonWidget['action'] }); setSelectedPopupButtonId(button.id); }}>
                       {actionSlotOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                   </label>
@@ -280,6 +287,11 @@ export function AccountSettingsPage({ accounts, dashboard }: AccountSettingsPage
                     Pos
                     <input value={button.position} inputMode="numeric" onChange={(event) => updateButton(button.id, { position: Number(event.target.value || 0) })} />
                   </label>
+                  {(button.action === 'versement' || button.action === 'transfer') && (
+                    <button type="button" className="button-settings-trigger" onClick={() => setSelectedPopupButtonId(button.id)}>
+                      Configure
+                    </button>
+                  )}
                   <button className="grid-delete" title="Delete" onClick={() => {
                     updateScreenConfig((prev) => ({ ...prev, buttons: prev.buttons.filter((item) => item.id !== button.id) }));
                   }}>
@@ -295,180 +307,204 @@ export function AccountSettingsPage({ accounts, dashboard }: AccountSettingsPage
             </div>
           </section>
 
+          {selectedPopupButton && selectedPopupButton.action === 'versement' && (
           <section className="config-section">
             <div className="config-section-header">
-              <h3>Versement / Retrait popup</h3>
+              <h3>{selectedPopupButton.label} — Versement / Retrait popup</h3>
             </div>
             <div className="settings-grid">
               <label className="form-field">
                 Popup title
-                <input value={screenConfig.popups.movement.title} onChange={(event) => updateMovementPopup({ title: event.target.value })} />
+                <input value={selectedButtonPopups.movement.title} onChange={(event) => updateMovementPopup({ title: event.target.value })} />
               </label>
               <label className="form-field">
                 Default operation
-                <select value={screenConfig.popups.movement.defaultType} onChange={(event) => updateMovementPopup({ defaultType: event.target.value as 'versement' | 'retrait' })}>
+                <select value={selectedButtonPopups.movement.defaultType} onChange={(event) => updateMovementPopup({ defaultType: event.target.value as 'versement' | 'retrait' })}>
                   <option value="versement">Versement</option>
                   <option value="retrait">Retrait</option>
                 </select>
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.movement.applyFixedType} onChange={(event) => updateMovementPopup({ applyFixedType: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.movement.applyFixedType} onChange={(event) => updateMovementPopup({ applyFixedType: event.target.checked })} />
                 <span>Apply fixed operation type</span>
               </label>
               <label className="form-field">
                 Fixed operation type
-                <select value={screenConfig.popups.movement.fixedType} onChange={(event) => updateMovementPopup({ fixedType: event.target.value as 'versement' | 'retrait' })}>
+                <select value={selectedButtonPopups.movement.fixedType} onChange={(event) => updateMovementPopup({ fixedType: event.target.value as 'versement' | 'retrait' })}>
                   <option value="versement">Versement</option>
                   <option value="retrait">Retrait</option>
                 </select>
               </label>
               <label className="form-field">
                 Versement toggle label
-                <input value={screenConfig.popups.movement.versementLabel} onChange={(event) => updateMovementPopup({ versementLabel: event.target.value })} />
+                <input value={selectedButtonPopups.movement.versementLabel} onChange={(event) => updateMovementPopup({ versementLabel: event.target.value })} />
               </label>
               <label className="form-field">
                 Retrait toggle label
-                <input value={screenConfig.popups.movement.retraitLabel} onChange={(event) => updateMovementPopup({ retraitLabel: event.target.value })} />
+                <input value={selectedButtonPopups.movement.retraitLabel} onChange={(event) => updateMovementPopup({ retraitLabel: event.target.value })} />
               </label>
               <label className="form-field">
                 Account label
-                <input value={screenConfig.popups.movement.accountLabel} onChange={(event) => updateMovementPopup({ accountLabel: event.target.value })} />
+                <input value={selectedButtonPopups.movement.accountLabel} onChange={(event) => updateMovementPopup({ accountLabel: event.target.value })} />
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.movement.applyFixedAccount} onChange={(event) => updateMovementPopup({ applyFixedAccount: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.movement.applyFixedAccount} onChange={(event) => updateMovementPopup({ applyFixedAccount: event.target.checked })} />
                 <span>Apply fixed compte</span>
               </label>
               <label className="form-field">
                 Fixed compte
-                <select value={screenConfig.popups.movement.fixedAccountId} onChange={(event) => updateMovementPopup({ fixedAccountId: event.target.value })}>
+                <select value={selectedButtonPopups.movement.fixedAccountId} onChange={(event) => updateMovementPopup({ fixedAccountId: event.target.value })}>
                   <option value="">Selectionner</option>
                   {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                 </select>
               </label>
               <label className="form-field">
                 Amount label
-                <input value={screenConfig.popups.movement.amountLabel} onChange={(event) => updateMovementPopup({ amountLabel: event.target.value })} />
+                <input value={selectedButtonPopups.movement.amountLabel} onChange={(event) => updateMovementPopup({ amountLabel: event.target.value })} />
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.movement.applyFixedAmount} onChange={(event) => updateMovementPopup({ applyFixedAmount: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.movement.applyFixedAmount} onChange={(event) => updateMovementPopup({ applyFixedAmount: event.target.checked })} />
                 <span>Apply fixed amount</span>
               </label>
               <label className="form-field">
                 Fixed amount
-                <input value={screenConfig.popups.movement.fixedAmount} inputMode="decimal" onChange={(event) => updateMovementPopup({ fixedAmount: event.target.value })} />
+                <input value={selectedButtonPopups.movement.fixedAmount} inputMode="decimal" onChange={(event) => updateMovementPopup({ fixedAmount: event.target.value })} />
               </label>
               <label className="form-field">
                 Validate label
-                <input value={screenConfig.popups.movement.validateLabel} onChange={(event) => updateMovementPopup({ validateLabel: event.target.value })} />
+                <input value={selectedButtonPopups.movement.validateLabel} onChange={(event) => updateMovementPopup({ validateLabel: event.target.value })} />
               </label>
               <label className="form-field">
                 Cancel label
-                <input value={screenConfig.popups.movement.cancelLabel} onChange={(event) => updateMovementPopup({ cancelLabel: event.target.value })} />
+                <input value={selectedButtonPopups.movement.cancelLabel} onChange={(event) => updateMovementPopup({ cancelLabel: event.target.value })} />
               </label>
               <label className="form-field settings-wide">
                 Description label
-                <input value={screenConfig.popups.movement.descriptionLabel} onChange={(event) => updateMovementPopup({ descriptionLabel: event.target.value })} />
+                <input value={selectedButtonPopups.movement.descriptionLabel} onChange={(event) => updateMovementPopup({ descriptionLabel: event.target.value })} />
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.movement.showDescription} onChange={(event) => updateMovementPopup({ showDescription: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.movement.showDescription} onChange={(event) => updateMovementPopup({ showDescription: event.target.checked })} />
                 <span>Show description field</span>
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.movement.applyFixedDescription} onChange={(event) => updateMovementPopup({ applyFixedDescription: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.movement.applyFixedDescription} onChange={(event) => updateMovementPopup({ applyFixedDescription: event.target.checked })} />
                 <span>Apply fixed description</span>
               </label>
               <label className="form-field settings-wide">
                 Fixed description
-                <input value={screenConfig.popups.movement.fixedDescription} onChange={(event) => updateMovementPopup({ fixedDescription: event.target.value })} />
+                <input value={selectedButtonPopups.movement.fixedDescription} onChange={(event) => updateMovementPopup({ fixedDescription: event.target.value })} />
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.movement.showContributors} onChange={(event) => updateMovementPopup({ showContributors: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.movement.showContributors} onChange={(event) => updateMovementPopup({ showContributors: event.target.checked })} />
                 <span>Show contributor name in versement/retrait</span>
               </label>
               <label className="form-field settings-wide">
                 Contributor label
-                <input value={screenConfig.popups.movement.contributorsLabel} onChange={(event) => updateMovementPopup({ contributorsLabel: event.target.value })} />
+                <input value={selectedButtonPopups.movement.contributorsLabel} onChange={(event) => updateMovementPopup({ contributorsLabel: event.target.value })} />
               </label>
             </div>
           </section>
+          )}
 
+          {selectedPopupButton && selectedPopupButton.action === 'transfer' && (
           <section className="config-section">
             <div className="config-section-header">
-              <h3>Transfert popup</h3>
+              <h3>{selectedPopupButton.label} — Transfert popup</h3>
             </div>
             <div className="settings-grid">
               <label className="form-field">
                 Popup title
-                <input value={screenConfig.popups.transfer.title} onChange={(event) => updateTransferPopup({ title: event.target.value })} />
+                <input value={selectedButtonPopups.transfer.title} onChange={(event) => updateTransferPopup({ title: event.target.value })} />
               </label>
               <label className="form-field">
                 From label
-                <input value={screenConfig.popups.transfer.fromLabel} onChange={(event) => updateTransferPopup({ fromLabel: event.target.value })} />
+                <input value={selectedButtonPopups.transfer.fromLabel} onChange={(event) => updateTransferPopup({ fromLabel: event.target.value })} />
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.transfer.applyFixedFromAccount} onChange={(event) => updateTransferPopup({ applyFixedFromAccount: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.transfer.applyFixedFromAccount} onChange={(event) => updateTransferPopup({ applyFixedFromAccount: event.target.checked })} />
                 <span>Apply fixed from compte</span>
               </label>
               <label className="form-field">
                 Fixed from compte
-                <select value={screenConfig.popups.transfer.fixedFromAccountId} onChange={(event) => updateTransferPopup({ fixedFromAccountId: event.target.value })}>
+                <select value={selectedButtonPopups.transfer.fixedFromAccountId} onChange={(event) => updateTransferPopup({ fixedFromAccountId: event.target.value })}>
                   <option value="">Selectionner</option>
                   {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                 </select>
               </label>
               <label className="form-field">
                 To label
-                <input value={screenConfig.popups.transfer.toLabel} onChange={(event) => updateTransferPopup({ toLabel: event.target.value })} />
+                <input value={selectedButtonPopups.transfer.toLabel} onChange={(event) => updateTransferPopup({ toLabel: event.target.value })} />
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.transfer.applyFixedToAccount} onChange={(event) => updateTransferPopup({ applyFixedToAccount: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.transfer.applyFixedToAccount} onChange={(event) => updateTransferPopup({ applyFixedToAccount: event.target.checked })} />
                 <span>Apply fixed to compte</span>
               </label>
               <label className="form-field">
                 Fixed to compte
-                <select value={screenConfig.popups.transfer.fixedToAccountId} onChange={(event) => updateTransferPopup({ fixedToAccountId: event.target.value })}>
+                <select value={selectedButtonPopups.transfer.fixedToAccountId} onChange={(event) => updateTransferPopup({ fixedToAccountId: event.target.value })}>
                   <option value="">Selectionner</option>
                   {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                 </select>
               </label>
               <label className="form-field">
-                Amount label
-                <input value={screenConfig.popups.transfer.amountLabel} onChange={(event) => updateTransferPopup({ amountLabel: event.target.value })} />
+                Amount source
+                <select value={selectedButtonPopups.transfer.amountMode} onChange={(event) => updateTransferPopup({ amountMode: event.target.value as 'manual' | 'completedTransfer' })}>
+                  <option value="manual">Manual amount</option>
+                  <option value="completedTransfer">Completed transfers list</option>
+                </select>
               </label>
-              <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.transfer.applyFixedAmount} onChange={(event) => updateTransferPopup({ applyFixedAmount: event.target.checked })} />
-                <span>Apply fixed amount</span>
-              </label>
+              {selectedButtonPopups.transfer.amountMode === 'completedTransfer' && (
+                <label className="form-field">
+                  Reference source (account C)
+                  <select value={selectedButtonPopups.transfer.completedTransferFromAccountId} onChange={(event) => updateTransferPopup({ completedTransferFromAccountId: event.target.value })}>
+                    <option value="">Selectionner</option>
+                    {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+                  </select>
+                </label>
+              )}
               <label className="form-field">
-                Fixed amount
-                <input value={screenConfig.popups.transfer.fixedAmount} inputMode="decimal" onChange={(event) => updateTransferPopup({ fixedAmount: event.target.value })} />
+                Amount label
+                <input value={selectedButtonPopups.transfer.amountLabel} onChange={(event) => updateTransferPopup({ amountLabel: event.target.value })} />
               </label>
+              {selectedButtonPopups.transfer.amountMode === 'manual' && (
+                <>
+                  <label className="toggle-line settings-wide">
+                    <input type="checkbox" checked={selectedButtonPopups.transfer.applyFixedAmount} onChange={(event) => updateTransferPopup({ applyFixedAmount: event.target.checked })} />
+                    <span>Apply fixed amount</span>
+                  </label>
+                  <label className="form-field">
+                    Fixed amount
+                    <input value={selectedButtonPopups.transfer.fixedAmount} inputMode="decimal" onChange={(event) => updateTransferPopup({ fixedAmount: event.target.value })} />
+                  </label>
+                </>
+              )}
               <label className="form-field">
                 Validate label
-                <input value={screenConfig.popups.transfer.validateLabel} onChange={(event) => updateTransferPopup({ validateLabel: event.target.value })} />
+                <input value={selectedButtonPopups.transfer.validateLabel} onChange={(event) => updateTransferPopup({ validateLabel: event.target.value })} />
               </label>
               <label className="form-field">
                 Cancel label
-                <input value={screenConfig.popups.transfer.cancelLabel} onChange={(event) => updateTransferPopup({ cancelLabel: event.target.value })} />
+                <input value={selectedButtonPopups.transfer.cancelLabel} onChange={(event) => updateTransferPopup({ cancelLabel: event.target.value })} />
               </label>
               <label className="form-field settings-wide">
                 Description label
-                <input value={screenConfig.popups.transfer.descriptionLabel} onChange={(event) => updateTransferPopup({ descriptionLabel: event.target.value })} />
+                <input value={selectedButtonPopups.transfer.descriptionLabel} onChange={(event) => updateTransferPopup({ descriptionLabel: event.target.value })} />
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.transfer.showDescription} onChange={(event) => updateTransferPopup({ showDescription: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.transfer.showDescription} onChange={(event) => updateTransferPopup({ showDescription: event.target.checked })} />
                 <span>Show description field</span>
               </label>
               <label className="toggle-line settings-wide">
-                <input type="checkbox" checked={screenConfig.popups.transfer.applyFixedDescription} onChange={(event) => updateTransferPopup({ applyFixedDescription: event.target.checked })} />
+                <input type="checkbox" checked={selectedButtonPopups.transfer.applyFixedDescription} onChange={(event) => updateTransferPopup({ applyFixedDescription: event.target.checked })} />
                 <span>Apply fixed description</span>
               </label>
               <label className="form-field settings-wide">
                 Fixed description
-                <input value={screenConfig.popups.transfer.fixedDescription} onChange={(event) => updateTransferPopup({ fixedDescription: event.target.value })} />
+                <input value={selectedButtonPopups.transfer.fixedDescription} onChange={(event) => updateTransferPopup({ fixedDescription: event.target.value })} />
               </label>
             </div>
           </section>
+          )}
 
           <div className="settings-actions">
             {saved && <span className="settings-saved">Configuration du compte sauvegardee</span>}

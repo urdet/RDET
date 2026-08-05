@@ -117,6 +117,7 @@ class AccountTransfer(Base):
     import_source: Mapped[str | None] = mapped_column(Text)
     reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reversal_reason: Mapped[str | None] = mapped_column(Text)
+    source_transfer_id: Mapped[int | None] = mapped_column(ForeignKey("account_transfers.id"))
 
 
 class AccountLedgerEntry(Base):
